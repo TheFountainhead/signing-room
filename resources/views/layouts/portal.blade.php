@@ -133,8 +133,16 @@
         }
         .fade-up.visible { opacity: 1; transform: translateY(0); }
 
+        @keyframes heroFloat {
+            0%   { transform: scale(1) translate(0, 0); }
+            33%  { transform: scale(1.03) translate(-1%, -1%); }
+            66%  { transform: scale(1.02) translate(0.5%, -0.5%); }
+            100% { transform: scale(1) translate(0, 0); }
+        }
+
         @media (prefers-reduced-motion: reduce) {
             .fade-up { opacity: 1; transform: none; transition: none; }
+            img[style*="heroFloat"] { animation: none !important; }
         }
 
         @media (max-width: 768px) {
