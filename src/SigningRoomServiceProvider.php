@@ -2,6 +2,9 @@
 
 namespace Fountainhead\SigningRoom;
 
+use Fountainhead\SigningRoom\Jobs\ExpireSigningEnvelopes;
+use Fountainhead\SigningRoom\Jobs\SendSigningReminders;
+use Fountainhead\SigningRoom\Jobs\SyncIduraSignatureStatus;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Support\ServiceProvider;
 
@@ -17,6 +20,10 @@ class SigningRoomServiceProvider extends ServiceProvider
         $this->loadViewsFrom(__DIR__ . '/../resources/views', 'signing-room');
         $this->loadMigrationsFrom(__DIR__ . '/../database/migrations');
 
+        $this->loadRoutesFrom(__DIR__ . '/../routes/portal.php');
+        $this->loadRoutesFrom(__DIR__ . '/../routes/admin.php');
+        $this->loadRoutesFrom(__DIR__ . '/../routes/webhook.php');
+
         if ($this->app->runningInConsole()) {
             $this->publishes([
                 __DIR__ . '/../config/signing-room.php' => config_path('signing-room.php'),
@@ -26,5 +33,12 @@ class SigningRoomServiceProvider extends ServiceProvider
                 __DIR__ . '/../resources/views' => resource_path('views/vendor/signing-room'),
             ], 'signing-room-views');
         }
+
+        $this->app->booted(function () {
+            $schedule = $this->app->make(Schedule::class);
+            $schedule->job(new SendSigningReminders)->dailyAt('09:00');
+            $schedule->job(new ExpireSigningEnvelopes)->dailyAt('00:15');
+            $schedule->job(new SyncIduraSignatureStatus)->hourly();
+        });
     }
 }
