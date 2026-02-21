@@ -1,0 +1,129 @@
+<?php
+
+namespace Fountainhead\SigningRoom\Livewire\Admin;
+
+use Fountainhead\SigningRoom\Services\SigningRoomService;
+use Illuminate\Support\Facades\Storage;
+use Livewire\Component;
+use Livewire\WithFileUploads;
+
+class EnvelopeCreate extends Component
+{
+    use WithFileUploads;
+
+    public string $title = '';
+
+    public string $description = '';
+
+    public $document;
+
+    public int $expiresInDays = 30;
+
+    public int $reminderInterval = 7;
+
+    public array $parties = [
+        ['name' => '', 'email' => '', 'role' => 'signer', 'signing_round' => 1],
+    ];
+
+    protected function rules(): array
+    {
+        $rules = [
+            'title' => 'required|string|max:255',
+            'description' => 'nullable|string|max:2000',
+            'document' => 'required|file|mimes:pdf|max:10240',
+            'expiresInDays' => 'required|integer|min:1|max:365',
+            'reminderInterval' => 'required|integer|min:1|max:30',
+            'parties' => 'required|array|min:1',
+        ];
+
+        foreach ($this->parties as $i => $party) {
+            $rules["parties.{$i}.name"] = 'required|string|max:255';
+            $rules["parties.{$i}.email"] = 'required|email|max:255';
+            $rules["parties.{$i}.role"] = 'required|in:signer,viewer';
+            $rules["parties.{$i}.signing_round"] = 'required|integer|min:1';
+        }
+
+        return $rules;
+    }
+
+    public function addParty(): void
+    {
+        $maxRound = max(array_column($this->parties, 'signing_round') ?: [1]);
+
+        $this->parties[] = [
+            'name' => '',
+            'email' => '',
+            'role' => 'signer',
+            'signing_round' => $maxRound,
+        ];
+    }
+
+    public function removeParty(int $index): void
+    {
+        if (count($this->parties) > 1) {
+            unset($this->parties[$index]);
+            $this->parties = array_values($this->parties);
+        }
+    }
+
+    public function sendForSigning(): void
+    {
+        $this->validate();
+
+        $disk = Storage::disk(config('signing-room.storage.disk', 'local'));
+        $path = $this->document->store(
+            config('signing-room.storage.path', 'signing-room'),
+            config('signing-room.storage.disk', 'local'),
+        );
+
+        $service = app(SigningRoomService::class);
+
+        $envelope = $service->createEnvelope(
+            title: $this->title,
+            pdfPath: $path,
+            parties: $this->parties,
+            description: $this->description ?: null,
+            expiresInDays: $this->expiresInDays,
+            reminderInterval: $this->reminderInterval,
+            createdBy: auth()->id(),
+        );
+
+        $service->sendEnvelope($envelope);
+
+        session()->flash('success', 'Dokumentet er sendt til underskrift.');
+
+        $this->redirect(route('signing-room.admin.show', $envelope));
+    }
+
+    public function saveDraft(): void
+    {
+        $this->validate();
+
+        $path = $this->document->store(
+            config('signing-room.storage.path', 'signing-room'),
+            config('signing-room.storage.disk', 'local'),
+        );
+
+        $service = app(SigningRoomService::class);
+
+        $envelope = $service->createEnvelope(
+            title: $this->title,
+            pdfPath: $path,
+            parties: $this->parties,
+            description: $this->description ?: null,
+            expiresInDays: $this->expiresInDays,
+            reminderInterval: $this->reminderInterval,
+            createdBy: auth()->id(),
+        );
+
+        session()->flash('success', 'Kladde gemt.');
+
+        $this->redirect(route('signing-room.admin.show', $envelope));
+    }
+
+    public function render()
+    {
+        return view('signing-room::admin.envelope-create')
+            ->layout('signing-room::layouts.admin', ['title' => 'Nyt dokument']);
+    }
+}
