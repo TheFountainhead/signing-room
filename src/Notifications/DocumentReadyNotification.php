@@ -3,6 +3,7 @@
 namespace Fountainhead\SigningRoom\Notifications;
 
 use Fountainhead\SigningRoom\Models\SigningEnvelope;
+use Fountainhead\SigningRoom\Models\SigningParty;
 use Illuminate\Bus\Queueable;
 use Illuminate\Notifications\Messages\MailMessage;
 use Illuminate\Notifications\Notification;
@@ -13,6 +14,7 @@ class DocumentReadyNotification extends Notification
 
     public function __construct(
         public SigningEnvelope $envelope,
+        public ?SigningParty $party = null,
     ) {}
 
     public function via($notifiable): array
@@ -26,14 +28,10 @@ class DocumentReadyNotification extends Notification
 
         return (new MailMessage)
             ->subject('Dokument til underskrift: ' . $this->envelope->title)
-            ->greeting('Hej ' . $notifiable->name)
-            ->line('Frankston har sendt dig et dokument til digital underskrift:')
-            ->line('**' . $this->envelope->title . '**')
-            ->when($this->envelope->expires_at, function ($message) {
-                $message->line('Deadline: ' . $this->envelope->expires_at->format('j. F Y'));
-            })
-            ->action('Se dokument og underskriv', $signingUrl)
-            ->line('Du bliver bedt om at identificere dig med MitID for at underskrive.')
-            ->salutation('Frankston ApS');
+            ->view('signing-room::emails.document-ready', [
+                'envelope' => $this->envelope,
+                'party' => $notifiable,
+                'signingUrl' => $signingUrl,
+            ]);
     }
 }
