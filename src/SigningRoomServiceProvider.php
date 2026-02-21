@@ -32,6 +32,10 @@ class SigningRoomServiceProvider extends ServiceProvider
             $this->publishes([
                 __DIR__ . '/../resources/views' => resource_path('views/vendor/signing-room'),
             ], 'signing-room-views');
+
+            $this->publishes([
+                __DIR__ . '/../resources/assets' => public_path('assets'),
+            ], 'signing-room-assets');
         }
 
         $this->app->booted(function () {

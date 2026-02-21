@@ -66,17 +66,17 @@
     {{-- Features --}}
     <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 24px; padding: 0 0 48px;">
         <div class="card card-hover fade-up" style="text-align: center; padding: 32px;">
-            <div style="font-size: 2rem; margin-bottom: 12px;">&#128274;</div>
+            <img src="{{ asset('assets/images/icons/secure-signing.jpg') }}" alt="Sikker signering" style="width: 80px; height: 80px; object-fit: contain; margin: 0 auto 16px; display: block; border-radius: 8px;">
             <h3 style="font-size: 1.125rem; margin-bottom: 8px;">Sikker signering</h3>
             <p style="color: var(--ft-grey); font-size: 0.95rem;">Alle underskrifter foretages med MitID og overholder eIDAS-forordningen.</p>
         </div>
         <div class="card card-hover fade-up" style="text-align: center; padding: 32px;">
-            <div style="font-size: 2rem; margin-bottom: 12px;">&#128196;</div>
+            <img src="{{ asset('assets/images/icons/legal-document.jpg') }}" alt="Juridisk bindende" style="width: 80px; height: 80px; object-fit: contain; margin: 0 auto 16px; display: block; border-radius: 8px;">
             <h3 style="font-size: 1.125rem; margin-bottom: 8px;">Juridisk bindende</h3>
             <p style="color: var(--ft-grey); font-size: 0.95rem;">Signerede dokumenter opfylder kravene til avancerede elektroniske signaturer (AES).</p>
         </div>
         <div class="card card-hover fade-up" style="text-align: center; padding: 32px;">
-            <div style="font-size: 2rem; margin-bottom: 12px;">&#9889;</div>
+            <img src="{{ asset('assets/images/icons/fast-easy.jpg') }}" alt="Hurtigt og nemt" style="width: 80px; height: 80px; object-fit: contain; margin: 0 auto 16px; display: block; border-radius: 8px;">
             <h3 style="font-size: 1.125rem; margin-bottom: 8px;">Hurtigt og nemt</h3>
             <p style="color: var(--ft-grey); font-size: 0.95rem;">Modtag dokumenter, gennemse og underskriv — alt sammen online.</p>
         </div>
