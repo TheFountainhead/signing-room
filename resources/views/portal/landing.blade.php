@@ -49,12 +49,26 @@
                     Her kan du underskrive dokumenter sikkert med MitID.
                 </p>
                 <p style="color: var(--ft-grey); margin-bottom: 40px; font-size: 1rem;">
-                    Log ind for at se dine dokumenter og foretage digitale underskrifter.
+                    Indtast din e-mail for at se dine dokumenter og foretage digitale underskrifter.
                 </p>
 
-                <a href="{{ route('signing-room.portal.dashboard') }}" class="btn-primary" style="font-size: 1.1rem; padding: 16px 40px;">
-                    Log på underskriftrum
-                </a>
+                <form wire:submit="login" style="max-width: 400px; margin: 0 auto;">
+                    <div style="display: flex; gap: 12px; align-items: start;">
+                        <div style="flex: 1;">
+                            <input type="email"
+                                   wire:model="email"
+                                   class="form-input"
+                                   placeholder="din@email.dk"
+                                   style="font-size: 1.05rem; padding: 14px 20px;">
+                            @error('email')
+                                <p class="form-error">{{ $message }}</p>
+                            @enderror
+                        </div>
+                        <button type="submit" class="btn-primary" style="font-size: 1.05rem; padding: 14px 32px; white-space: nowrap;">
+                            Log ind
+                        </button>
+                    </div>
+                </form>
 
                 <div style="margin-top: 24px; font-size: 0.875rem; color: var(--ft-grey);">
                     <p>Sikker digital underskrift med MitID</p>
