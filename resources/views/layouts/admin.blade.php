@@ -157,6 +157,13 @@
                     + Nyt dokument
                 </a>
             </nav>
+            <div class="admin-sidebar-label">Indstillinger</div>
+            <nav>
+                <a href="{{ route('signing-room.admin.users') }}"
+                   class="{{ request()->routeIs('signing-room.admin.users') ? 'active' : '' }}">
+                    Administratorer
+                </a>
+            </nav>
         </aside>
 
         <main class="admin-content">

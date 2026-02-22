@@ -12,6 +12,9 @@ Route::middleware(config('signing-room.routes.admin_middleware', ['web', 'auth']
         Route::get('/create', \Fountainhead\SigningRoom\Livewire\Admin\EnvelopeCreate::class)
             ->name('create');
 
+        Route::get('/users', \Fountainhead\SigningRoom\Livewire\Admin\AdminUsers::class)
+            ->name('users');
+
         Route::get('/{signingEnvelope:uuid}', \Fountainhead\SigningRoom\Livewire\Admin\EnvelopeShow::class)
             ->name('show');
     });
