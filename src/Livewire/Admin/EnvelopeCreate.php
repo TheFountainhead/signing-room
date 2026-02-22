@@ -21,7 +21,7 @@ class EnvelopeCreate extends Component
 
     public int $reminderInterval = 7;
 
-    public bool $creatorSigns = false;
+    public ?int $internalSignerId = null;
 
     public array $parties = [
         ['name' => '', 'email' => '', 'role' => 'signer', 'signing_round' => 1],
@@ -72,16 +72,19 @@ class EnvelopeCreate extends Component
     {
         $parties = $this->parties;
 
-        if ($this->creatorSigns) {
-            $user = auth()->user();
-            $maxRound = max(array_column($parties, 'signing_round') ?: [1]);
+        if ($this->internalSignerId) {
+            $user = \App\Models\User::find($this->internalSignerId);
 
-            $parties[] = [
-                'name' => $user->name,
-                'email' => $user->email,
-                'role' => 'signer',
-                'signing_round' => $maxRound,
-            ];
+            if ($user) {
+                $maxRound = max(array_column($parties, 'signing_round') ?: [1]);
+
+                $parties[] = [
+                    'name' => $user->name,
+                    'email' => $user->email,
+                    'role' => 'signer',
+                    'signing_round' => $maxRound,
+                ];
+            }
         }
 
         return $parties;
@@ -171,7 +174,8 @@ class EnvelopeCreate extends Component
 
     public function render()
     {
-        return view('signing-room::admin.envelope-create')
-            ->layout('signing-room::layouts.admin', ['title' => 'Nyt dokument']);
+        return view('signing-room::admin.envelope-create', [
+            'admins' => \App\Models\User::orderBy('name')->get(),
+        ])->layout('signing-room::layouts.admin', ['title' => 'Nyt dokument']);
     }
 }
