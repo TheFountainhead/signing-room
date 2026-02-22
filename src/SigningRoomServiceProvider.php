@@ -29,6 +29,7 @@ class SigningRoomServiceProvider extends ServiceProvider
         Livewire::component('fountainhead.signing-room.livewire.admin.envelope-list', \Fountainhead\SigningRoom\Livewire\Admin\EnvelopeList::class);
         Livewire::component('fountainhead.signing-room.livewire.admin.envelope-create', \Fountainhead\SigningRoom\Livewire\Admin\EnvelopeCreate::class);
         Livewire::component('fountainhead.signing-room.livewire.admin.envelope-show', \Fountainhead\SigningRoom\Livewire\Admin\EnvelopeShow::class);
+        Livewire::component('fountainhead.signing-room.livewire.admin.admin-users', \Fountainhead\SigningRoom\Livewire\Admin\AdminUsers::class);
 
         $this->loadRoutesFrom(__DIR__ . '/../routes/portal.php');
         $this->loadRoutesFrom(__DIR__ . '/../routes/admin.php');
