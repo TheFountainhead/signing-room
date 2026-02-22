@@ -26,23 +26,46 @@
                 </a>
             </div>
             <div style="height: 700px; background: #F5F5F5; position: relative;">
-                <object data="{{ route('signing-room.portal.pdf', $signingParty) }}" type="application/pdf" style="width: 100%; height: 100%;">
-                    <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; padding: 32px; text-align: center;">
-                        <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#757575" stroke-width="1.5" style="margin-bottom: 16px;">
-                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-                            <polyline points="14 2 14 8 20 8"></polyline>
-                            <line x1="16" y1="13" x2="8" y2="13"></line>
-                            <line x1="16" y1="17" x2="8" y2="17"></line>
-                            <polyline points="10 9 9 9 8 9"></polyline>
-                        </svg>
-                        <p style="color: var(--ft-dark); font-weight: 600; margin-bottom: 8px;">Dokumentet kan ikke vises her</p>
-                        <p style="color: var(--ft-grey); font-size: 0.9rem; margin-bottom: 16px;">Klik herunder for at se dokumentet i et nyt vindue.</p>
-                        <a href="{{ route('signing-room.portal.pdf', $signingParty) }}" target="_blank" class="btn-primary">
-                            Se dokument
-                        </a>
-                    </div>
-                </object>
+                <iframe id="pdf-viewer" style="width: 100%; height: 100%; border: none; display: none;" title="PDF-dokument"></iframe>
+                <div id="pdf-loading" style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; padding: 32px; text-align: center;">
+                    <div style="width: 40px; height: 40px; border: 3px solid var(--ft-border); border-top-color: var(--ft-blue); border-radius: 50%; animation: spin 0.8s linear infinite; margin-bottom: 16px;"></div>
+                    <p style="color: var(--ft-grey);">Indlæser dokument...</p>
+                </div>
+                <div id="pdf-fallback" style="display: none; flex-direction: column; align-items: center; justify-content: center; height: 100%; padding: 32px; text-align: center;">
+                    <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#757575" stroke-width="1.5" style="margin-bottom: 16px;">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                        <polyline points="14 2 14 8 20 8"></polyline>
+                        <line x1="16" y1="13" x2="8" y2="13"></line>
+                        <line x1="16" y1="17" x2="8" y2="17"></line>
+                    </svg>
+                    <p style="color: var(--ft-dark); font-weight: 600; margin-bottom: 8px;">Dokumentet kan ikke vises her</p>
+                    <p style="color: var(--ft-grey); font-size: 0.9rem; margin-bottom: 16px;">Klik herunder for at åbne dokumentet.</p>
+                    <a href="{{ route('signing-room.portal.pdf', $signingParty) }}" target="_blank" class="btn-primary">
+                        Se dokument
+                    </a>
+                </div>
             </div>
+            <script>
+                (function() {
+                    var pdfUrl = @json(route('signing-room.portal.pdf', $signingParty));
+                    fetch(pdfUrl, { credentials: 'same-origin' })
+                        .then(function(res) {
+                            if (!res.ok) throw new Error('HTTP ' + res.status);
+                            return res.blob();
+                        })
+                        .then(function(blob) {
+                            var url = URL.createObjectURL(blob);
+                            var viewer = document.getElementById('pdf-viewer');
+                            viewer.src = url;
+                            viewer.style.display = 'block';
+                            document.getElementById('pdf-loading').style.display = 'none';
+                        })
+                        .catch(function() {
+                            document.getElementById('pdf-loading').style.display = 'none';
+                            document.getElementById('pdf-fallback').style.display = 'flex';
+                        });
+                })();
+            </script>
         </div>
 
         {{-- Signing Panel --}}
@@ -165,6 +188,7 @@
     @endif
 
     <style>
+        @keyframes spin { to { transform: rotate(360deg); } }
         .signing-layout {
             display: grid;
             grid-template-columns: 1fr 360px;
