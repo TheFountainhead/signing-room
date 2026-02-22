@@ -161,6 +161,12 @@
             <div class="sr-header-actions">
                 @if(session('signing_room_email'))
                     <a href="{{ route('signing-room.portal.dashboard') }}">Mine dokumenter</a>
+                    <form action="{{ route('signing-room.portal.logout') }}" method="POST" style="display: inline;">
+                        @csrf
+                        <button type="submit" style="background: none; border: none; cursor: pointer; font-family: inherit; font-size: 0.95rem; font-weight: 600; color: var(--ft-grey);">
+                            Log ud
+                        </button>
+                    </form>
                 @endif
             </div>
         </div>

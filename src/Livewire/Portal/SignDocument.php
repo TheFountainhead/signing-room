@@ -20,6 +20,11 @@ class SignDocument extends Component
     {
         $this->signingParty = $signingParty->load('envelope.parties');
 
+        // Set portal session so signer can access dashboard after MitID redirect
+        if (! session('signing_room_email')) {
+            session(['signing_room_email' => $this->signingParty->email]);
+        }
+
         // Mark as viewed on first access
         if (! $this->signingParty->viewed_at) {
             $this->signingParty->update([

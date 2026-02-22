@@ -70,6 +70,17 @@
                     </div>
                 </form>
 
+                @if($notFound)
+                    <div style="margin-top: 16px; max-width: 400px; margin-left: auto; margin-right: auto; padding: 12px 16px; background: #FFF8E1; border: 1px solid #FFE082; border-radius: 6px;">
+                        <p style="color: #F57F17; font-size: 0.9rem; font-weight: 600; margin: 0;">
+                            Vi fandt ingen dokumenter til denne e-mailadresse.
+                        </p>
+                        <p style="color: #F57F17; font-size: 0.85rem; margin: 4px 0 0;">
+                            Kontrollér at du har indtastet den korrekte e-mail, eller kontakt afsenderen.
+                        </p>
+                    </div>
+                @endif
+
                 <div style="margin-top: 24px; font-size: 0.875rem; color: var(--ft-grey);">
                     <p>Sikker digital underskrift med MitID</p>
                 </div>

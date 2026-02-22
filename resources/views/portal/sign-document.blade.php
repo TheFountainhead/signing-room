@@ -16,28 +16,23 @@
         </div>
     @endif
 
-    <div style="display: grid; grid-template-columns: 1fr 360px; gap: 32px; align-items: start;">
+    <div class="signing-layout fade-up">
         {{-- PDF Preview --}}
-        <div class="card fade-up" style="padding: 0; overflow: hidden;">
+        <div class="card" style="padding: 0; overflow: hidden;">
             <div style="padding: 16px 24px; border-bottom: 1px solid var(--ft-border); background: var(--ft-pink-light);">
                 <h3 style="font-size: 1rem; font-family: 'Source Sans 3', sans-serif;">Dokumentvisning</h3>
             </div>
             <div style="height: 700px; background: #F5F5F5;">
-                {{-- PDF iframe would point to a streaming route --}}
-                <div style="display: flex; align-items: center; justify-content: center; height: 100%; color: var(--ft-grey);">
-                    <div style="text-align: center;">
-                        <div style="font-size: 3rem; margin-bottom: 16px;">&#128196;</div>
-                        <p>PDF-dokument</p>
-                        <p style="font-size: 0.875rem;">{{ $envelope->title }}.pdf</p>
-                    </div>
-                </div>
+                <iframe src="{{ route('signing-room.portal.pdf', $signingParty) }}"
+                        style="width: 100%; height: 100%; border: none;"
+                        title="PDF-dokument"></iframe>
             </div>
         </div>
 
         {{-- Signing Panel --}}
         <div>
             {{-- Status --}}
-            <div class="card fade-up" style="margin-bottom: 16px;">
+            <div class="card" style="margin-bottom: 16px;">
                 <h3 style="font-size: 1rem; font-family: 'Source Sans 3', sans-serif; margin-bottom: 16px;">Underskriftstatus</h3>
 
                 @if($envelope->expires_at)
@@ -86,17 +81,20 @@
 
             {{-- Action Buttons --}}
             @if($signingParty->status !== \Fountainhead\SigningRoom\Enums\SigningPartyStatus::Signed && $signingParty->status !== \Fountainhead\SigningRoom\Enums\SigningPartyStatus::Rejected)
-                <div class="card fade-up">
+                <div class="card">
                     <h3 style="font-size: 1rem; font-family: 'Source Sans 3', sans-serif; margin-bottom: 16px;">Handling</h3>
 
-                    @if($signingParty->idura_signatory_id)
+                    @if($signingParty->idura_signatory_href)
                         <p style="font-size: 0.9rem; color: var(--ft-grey); margin-bottom: 16px;">
                             Klik herunder for at underskrive dokumentet med MitID. Du vil blive sendt til en sikker underskriftsside.
                         </p>
-                        {{-- The signing link from Idura --}}
-                        <a href="#mitid-signing-link" class="btn-primary" style="display: block; text-align: center; margin-bottom: 12px;">
+                        <a href="{{ $signingParty->idura_signatory_href }}" class="btn-primary" style="display: block; text-align: center; margin-bottom: 12px;">
                             Underskriv med MitID
                         </a>
+                    @elseif($signingParty->idura_signatory_id)
+                        <p style="font-size: 0.9rem; color: var(--ft-grey); margin-bottom: 16px;">
+                            Underskriftslinket forberedes. Genindlæs siden om et øjeblik.
+                        </p>
                     @else
                         <p style="font-size: 0.9rem; color: var(--ft-grey); margin-bottom: 16px;">
                             Dokumentet afventer afsenderens godkendelse før du kan underskrive.
@@ -108,13 +106,13 @@
                     </button>
                 </div>
             @elseif($signingParty->status === \Fountainhead\SigningRoom\Enums\SigningPartyStatus::Signed)
-                <div class="card fade-up" style="text-align: center;">
+                <div class="card" style="text-align: center;">
                     <div style="font-size: 2.5rem; margin-bottom: 12px;">&#9989;</div>
                     <h3 style="font-size: 1.125rem; margin-bottom: 8px;">Underskrevet</h3>
                     <p style="color: var(--ft-grey); font-size: 0.9rem;">Du har underskrevet dette dokument {{ $signingParty->signed_at?->format('j. M Y') }}.</p>
                 </div>
             @elseif($signingParty->status === \Fountainhead\SigningRoom\Enums\SigningPartyStatus::Rejected)
-                <div class="card fade-up" style="text-align: center;">
+                <div class="card" style="text-align: center;">
                     <div style="font-size: 2.5rem; margin-bottom: 12px;">&#10060;</div>
                     <h3 style="font-size: 1.125rem; margin-bottom: 8px;">Afvist</h3>
                     <p style="color: var(--ft-grey); font-size: 0.9rem;">Du har afvist dette dokument.</p>
@@ -133,6 +131,9 @@
         <div style="position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 200; display: flex; align-items: center; justify-content: center;">
             <div class="card" style="width: 100%; max-width: 480px;">
                 <h2 style="font-size: 1.25rem; margin-bottom: 16px;">Afvis dokument</h2>
+                <p style="color: var(--ft-grey); margin-bottom: 8px;">
+                    Du er ved at afvise: <strong>{{ $envelope->title }}</strong>
+                </p>
                 <p style="color: var(--ft-grey); margin-bottom: 16px;">Angiv venligst en årsag for afvisningen. Afsenderen vil blive informeret.</p>
                 <div class="form-group">
                     <label class="form-label">Årsag *</label>
@@ -146,4 +147,21 @@
             </div>
         </div>
     @endif
+
+    <style>
+        .signing-layout {
+            display: grid;
+            grid-template-columns: 1fr 360px;
+            gap: 32px;
+            align-items: start;
+        }
+        @media (max-width: 768px) {
+            .signing-layout {
+                grid-template-columns: 1fr;
+            }
+            .signing-layout iframe {
+                height: 500px !important;
+            }
+        }
+    </style>
 </div>

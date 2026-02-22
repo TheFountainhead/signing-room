@@ -70,13 +70,31 @@ class EnvelopeCreate extends Component
     {
         $this->validate();
 
-        $disk = Storage::disk(config('signing-room.storage.disk', 'local'));
         $path = $this->document->store(
             config('signing-room.storage.path', 'signing-room'),
             config('signing-room.storage.disk', 'local'),
         );
 
+        // Validate PDF with Idura before creating the order
+        $disk = Storage::disk(config('signing-room.storage.disk', 'local'));
+        $pdfBase64 = base64_encode($disk->get($path));
+
         $service = app(SigningRoomService::class);
+
+        try {
+            $validation = $service->validateDocument($pdfBase64);
+
+            if (! $validation['valid']) {
+                $disk->delete($path);
+                $errors = implode(', ', $validation['errors'] ?? ['Ukendt fejl']);
+                $this->addError('document', "PDF-dokumentet er ikke gyldigt: {$errors}");
+
+                return;
+            }
+        } catch (\Exception $e) {
+            // If validation service is unavailable, proceed anyway
+            report($e);
+        }
 
         $envelope = $service->createEnvelope(
             title: $this->title,

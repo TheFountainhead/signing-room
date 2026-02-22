@@ -10,6 +10,7 @@ use Fountainhead\SigningRoom\Models\SigningEnvelope;
 use Fountainhead\SigningRoom\Models\SigningParty;
 use Fountainhead\SigningRoom\Notifications\DocumentReadyNotification;
 use Fountainhead\SigningRoom\Notifications\EnvelopeCompletedNotification;
+use Fountainhead\SigningRoom\Notifications\PartyRejectedNotification;
 use Illuminate\Support\Facades\Storage;
 
 class SigningRoomService
@@ -95,12 +96,12 @@ class SigningRoomService
             'reference' => $party->uuid,
             'role' => strtoupper($party->role instanceof SigningPartyRole ? $party->role->value : $party->role),
             'signing_sequence' => $party->signing_round,
-            'cpr' => $party->cpr_last_four ? null : null, // CPR is not sent; only cpr_last_four is stored
+            'cpr' => $party->cpr_last_four ?: null,
         ])->all();
 
         $iduraSignatories = $this->idura->addSignatories($order['id'], $signatories);
 
-        // Map Idura signatory IDs back to our parties
+        // Map Idura signatory IDs and signing links back to our parties
         foreach ($iduraSignatories as $iduraSignatory) {
             $party = $envelope->parties
                 ->firstWhere('uuid', $iduraSignatory['reference']);
@@ -108,6 +109,7 @@ class SigningRoomService
             if ($party) {
                 $party->update([
                     'idura_signatory_id' => $iduraSignatory['id'],
+                    'idura_signatory_href' => $iduraSignatory['href'] ?? null,
                 ]);
             }
         }
@@ -166,6 +168,9 @@ class SigningRoomService
         $envelope->logEvent(SigningEventType::PartyRejected, $party, [
             'reason' => $reason,
         ]);
+
+        // Notify the envelope creator
+        $this->notifyCreator($envelope, new PartyRejectedNotification($envelope, $party));
     }
 
     /**
@@ -188,6 +193,14 @@ class SigningRoomService
 
             $envelope->logEvent(SigningEventType::PartyNotified, $party);
         }
+    }
+
+    /**
+     * Validate a PDF document before creating a signature order.
+     */
+    public function validateDocument(string $pdfBase64): array
+    {
+        return $this->idura->validateDocument($pdfBase64);
     }
 
     /**
@@ -264,6 +277,25 @@ class SigningRoomService
         // Notify all parties that the envelope is completed
         foreach ($envelope->parties as $party) {
             $party->notify(new EnvelopeCompletedNotification($envelope));
+        }
+
+        // Also notify the creator
+        $this->notifyCreator($envelope, new EnvelopeCompletedNotification($envelope));
+    }
+
+    /**
+     * Send a notification to the envelope creator via anonymous notifiable.
+     */
+    private function notifyCreator(SigningEnvelope $envelope, $notification): void
+    {
+        if (! $envelope->created_by) {
+            return;
+        }
+
+        $creator = \App\Models\User::find($envelope->created_by);
+
+        if ($creator) {
+            $creator->notify($notification);
         }
     }
 }

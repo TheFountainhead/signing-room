@@ -1,6 +1,7 @@
 <?php
 
 use Fountainhead\SigningRoom\Models\SigningEnvelope;
+use Fountainhead\SigningRoom\Models\SigningParty;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\Storage;
 
@@ -37,4 +38,34 @@ Route::middleware(config('signing-room.routes.portal_middleware', ['web']))
 
             return $disk->download($signingEnvelope->signed_document, $filename);
         })->name('download');
+
+        Route::get('/pdf/{signingParty:uuid}', function (SigningParty $signingParty) {
+            // Allow access if: signing token is valid OR session email matches
+            $email = session('signing_room_email');
+            $hasSession = $email && $signingParty->email === $email;
+
+            if (! $hasSession && ! $signingParty->isTokenValid()) {
+                abort(403);
+            }
+
+            $envelope = $signingParty->envelope;
+            $document = $envelope->signed_document ?? $envelope->original_document;
+
+            if (! $document) {
+                abort(404);
+            }
+
+            $disk = Storage::disk(config('signing-room.storage.disk', 'local'));
+
+            return response($disk->get($document), 200, [
+                'Content-Type' => 'application/pdf',
+                'Content-Disposition' => 'inline',
+            ]);
+        })->name('pdf');
+
+        Route::post('/logout', function () {
+            session()->forget('signing_room_email');
+
+            return redirect()->route('signing-room.portal.landing');
+        })->name('logout');
     });
