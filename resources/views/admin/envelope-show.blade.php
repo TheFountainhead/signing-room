@@ -31,6 +31,12 @@
         </div>
     @endif
 
+    @if(session('warning'))
+        <div style="background: #FFF8E1; color: #F57F17; padding: 16px; border-radius: 8px; margin-bottom: 24px; border: 1px solid #FFE082;">
+            {{ session('warning') }}
+        </div>
+    @endif
+
     {{-- Info Cards --}}
     <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 32px;">
         <div class="card" style="text-align: center;">
@@ -152,13 +158,16 @@
                     <div style="position: relative; padding-bottom: 20px;">
                         {{-- Dot --}}
                         @php
+                            $eventValue = $event->event_type instanceof \Fountainhead\SigningRoom\Enums\SigningEventType
+                                ? $event->event_type->value
+                                : (string) $event->event_type;
                             $dotColor = match(true) {
-                                str_contains($event->event_type, 'signed'), str_contains($event->event_type, 'completed') => 'var(--ft-green)',
-                                str_contains($event->event_type, 'rejected'), str_contains($event->event_type, 'cancelled'), str_contains($event->event_type, 'error'), str_contains($event->event_type, 'expired') => 'var(--ft-red)',
-                                str_contains($event->event_type, 'sent'), str_contains($event->event_type, 'notified'), str_contains($event->event_type, 'viewed') => 'var(--ft-blue)',
+                                str_contains($eventValue, 'signed'), str_contains($eventValue, 'completed') => 'var(--ft-green)',
+                                str_contains($eventValue, 'rejected'), str_contains($eventValue, 'cancelled'), str_contains($eventValue, 'error'), str_contains($eventValue, 'expired') => 'var(--ft-red)',
+                                str_contains($eventValue, 'sent'), str_contains($eventValue, 'notified'), str_contains($eventValue, 'viewed') => 'var(--ft-blue)',
                                 default => 'var(--ft-grey)',
                             };
-                            $eventLabel = match($event->event_type) {
+                            $eventLabel = match($eventValue) {
                                 'envelope.created' => 'Dokument oprettet',
                                 'envelope.sent' => 'Sendt til underskrift',
                                 'envelope.completed' => 'Alle underskrifter modtaget',
@@ -171,7 +180,7 @@
                                 'party.rejected' => 'Afvist',
                                 'party.error' => 'Fejl',
                                 'round.advanced' => 'Runde avanceret',
-                                default => $event->event_type,
+                                default => $eventValue,
                             };
                         @endphp
                         <div style="position: absolute; left: -20px; top: 4px; width: 12px; height: 12px; border-radius: 50%; background: {{ $dotColor }};"></div>
