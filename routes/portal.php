@@ -63,7 +63,7 @@ Route::middleware(config('signing-room.routes.portal_middleware', ['web']))
             ]);
         })->name('pdf');
 
-        Route::post('/logout', function () {
+        Route::post('/sign-out', function () {
             session()->forget('signing_room_email');
 
             return redirect()->route('signing-room.portal.landing');
