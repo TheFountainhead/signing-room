@@ -8,14 +8,22 @@ use RuntimeException;
 class IduraSignatureService
 {
     private string $endpoint;
-    private string $clientId;
-    private string $clientSecret;
+    private ?string $clientId;
+    private ?string $clientSecret;
 
     public function __construct()
     {
-        $this->endpoint = config('signing-room.idura.endpoint');
+        $this->endpoint = config('signing-room.idura.endpoint', 'https://signatures-api.criipto.com/v1/graphql');
         $this->clientId = config('signing-room.idura.client_id');
         $this->clientSecret = config('signing-room.idura.client_secret');
+    }
+
+    /**
+     * Check if the service is configured with valid credentials.
+     */
+    public function isConfigured(): bool
+    {
+        return $this->clientId !== null && $this->clientSecret !== null;
     }
 
     /**
@@ -282,6 +290,10 @@ GRAPHQL;
      */
     private function query(string $query, array $variables = []): array
     {
+        if (! $this->isConfigured()) {
+            throw new RuntimeException('Idura Signatures API credentials are not configured. Set IDURA_SIGNATURES_CLIENT_ID and IDURA_SIGNATURES_CLIENT_SECRET.');
+        }
+
         $response = Http::withBasicAuth($this->clientId, $this->clientSecret)
             ->timeout(30)
             ->post($this->endpoint, [

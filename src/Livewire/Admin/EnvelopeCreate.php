@@ -106,6 +106,15 @@ class EnvelopeCreate extends Component
             createdBy: auth()->id(),
         );
 
+        // Check if signing service is configured before attempting to send
+        $idura = app(\Fountainhead\SigningRoom\Services\IduraSignatureService::class);
+        if (! $idura->isConfigured()) {
+            session()->flash('warning', 'Dokumentet er gemt som kladde. Digital signering kræver Idura API-nøgler (IDURA_SIGNATURES_CLIENT_ID og IDURA_SIGNATURES_CLIENT_SECRET).');
+            $this->redirect(route('signing-room.admin.show', $envelope));
+
+            return;
+        }
+
         $service->sendEnvelope($envelope);
 
         session()->flash('success', 'Dokumentet er sendt til underskrift.');
