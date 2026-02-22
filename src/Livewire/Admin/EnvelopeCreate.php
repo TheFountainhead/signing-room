@@ -21,6 +21,8 @@ class EnvelopeCreate extends Component
 
     public int $reminderInterval = 7;
 
+    public bool $creatorSigns = false;
+
     public array $parties = [
         ['name' => '', 'email' => '', 'role' => 'signer', 'signing_round' => 1],
     ];
@@ -66,6 +68,25 @@ class EnvelopeCreate extends Component
         }
     }
 
+    private function allParties(): array
+    {
+        $parties = $this->parties;
+
+        if ($this->creatorSigns) {
+            $user = auth()->user();
+            $maxRound = max(array_column($parties, 'signing_round') ?: [1]);
+
+            $parties[] = [
+                'name' => $user->name,
+                'email' => $user->email,
+                'role' => 'signer',
+                'signing_round' => $maxRound,
+            ];
+        }
+
+        return $parties;
+    }
+
     public function sendForSigning(): void
     {
         $this->validate();
@@ -99,7 +120,7 @@ class EnvelopeCreate extends Component
         $envelope = $service->createEnvelope(
             title: $this->title,
             pdfPath: $path,
-            parties: $this->parties,
+            parties: $this->allParties(),
             description: $this->description ?: null,
             expiresInDays: $this->expiresInDays,
             reminderInterval: $this->reminderInterval,
@@ -136,7 +157,7 @@ class EnvelopeCreate extends Component
         $envelope = $service->createEnvelope(
             title: $this->title,
             pdfPath: $path,
-            parties: $this->parties,
+            parties: $this->allParties(),
             description: $this->description ?: null,
             expiresInDays: $this->expiresInDays,
             reminderInterval: $this->reminderInterval,

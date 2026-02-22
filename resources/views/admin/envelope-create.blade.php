@@ -92,6 +92,19 @@
                 </button>
             </div>
 
+            {{-- Creator signs toggle --}}
+            <label style="display: flex; align-items: center; gap: 10px; padding: 12px 16px; border: 1px solid var(--ft-border); border-radius: 8px; margin-bottom: 16px; cursor: pointer; background: {{ $creatorSigns ? '#EBF5FF' : 'white' }}; transition: background 0.15s ease;">
+                <div style="position: relative; width: 40px; height: 22px; flex-shrink: 0;">
+                    <input type="checkbox" wire:model.live="creatorSigns" style="position: absolute; opacity: 0; width: 100%; height: 100%; cursor: pointer; margin: 0;">
+                    <div style="width: 40px; height: 22px; border-radius: 11px; background: {{ $creatorSigns ? 'var(--ft-blue)' : '#D1D5DB' }}; transition: background 0.2s ease;"></div>
+                    <div style="position: absolute; top: 2px; left: {{ $creatorSigns ? '20px' : '2px' }}; width: 18px; height: 18px; border-radius: 50%; background: white; box-shadow: 0 1px 3px rgba(0,0,0,0.2); transition: left 0.2s ease;"></div>
+                </div>
+                <div>
+                    <span style="font-weight: 600; font-size: 0.9rem; color: var(--ft-dark);">Jeg skal også underskrive</span>
+                    <span style="font-size: 0.8rem; color: var(--ft-grey); display: block;">{{ auth()->user()->name }} ({{ auth()->user()->email }})</span>
+                </div>
+            </label>
+
             @foreach($parties as $index => $party)
                 <div style="padding: 16px; border: 1px solid var(--ft-border); border-radius: 8px; margin-bottom: 12px; background: var(--ft-pink-light);">
                     <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
