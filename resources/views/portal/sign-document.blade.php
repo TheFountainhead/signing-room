@@ -17,20 +17,23 @@
     @endif
 
     <div class="signing-layout fade-up">
-        {{-- PDF Preview --}}
+        {{-- PDF Preview (rendered via PDF.js to bypass X-Frame-Options) --}}
         <div class="card" style="padding: 0; overflow: hidden;">
-            <div style="padding: 16px 24px; border-bottom: 1px solid var(--ft-border); background: var(--ft-pink-light); display: flex; align-items: center; justify-content: space-between;">
-                <h3 style="font-size: 1rem; font-family: 'Source Sans 3', sans-serif;">Dokumentvisning</h3>
-                <a href="{{ route('signing-room.portal.pdf', $signingParty) }}" target="_blank" style="font-size: 0.85rem; font-weight: 600; color: var(--ft-blue);">
-                    Åbn i nyt vindue &nearr;
-                </a>
+            <div style="padding: 12px 24px; border-bottom: 1px solid var(--ft-border); background: var(--ft-pink-light); display: flex; align-items: center; justify-content: space-between;">
+                <h3 style="font-size: 1rem; font-family: 'Source Sans 3', sans-serif; margin: 0;">Dokumentvisning</h3>
+                <div style="display: flex; align-items: center; gap: 16px;">
+                    <span id="pdf-page-info" style="font-size: 0.85rem; color: var(--ft-grey);"></span>
+                    <a href="{{ route('signing-room.portal.pdf', $signingParty) }}" target="_blank" style="font-size: 0.85rem; font-weight: 600; color: var(--ft-blue);">
+                        Åbn i nyt vindue &nearr;
+                    </a>
+                </div>
             </div>
-            <div style="height: 700px; background: #F5F5F5; position: relative;">
-                <iframe id="pdf-viewer" style="width: 100%; height: 100%; border: none; display: none;" title="PDF-dokument"></iframe>
+            <div id="pdf-container" style="height: 700px; background: #E8E8E8; overflow-y: auto; position: relative;">
                 <div id="pdf-loading" style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; padding: 32px; text-align: center;">
                     <div style="width: 40px; height: 40px; border: 3px solid var(--ft-border); border-top-color: var(--ft-blue); border-radius: 50%; animation: spin 0.8s linear infinite; margin-bottom: 16px;"></div>
                     <p style="color: var(--ft-grey);">Indlæser dokument...</p>
                 </div>
+                <div id="pdf-pages" style="display: none; padding: 16px; display: flex; flex-direction: column; align-items: center; gap: 12px;"></div>
                 <div id="pdf-fallback" style="display: none; flex-direction: column; align-items: center; justify-content: center; height: 100%; padding: 32px; text-align: center;">
                     <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#757575" stroke-width="1.5" style="margin-bottom: 16px;">
                         <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
@@ -40,31 +43,55 @@
                     </svg>
                     <p style="color: var(--ft-dark); font-weight: 600; margin-bottom: 8px;">Dokumentet kan ikke vises her</p>
                     <p style="color: var(--ft-grey); font-size: 0.9rem; margin-bottom: 16px;">Klik herunder for at åbne dokumentet.</p>
-                    <a href="{{ route('signing-room.portal.pdf', $signingParty) }}" target="_blank" class="btn-primary">
-                        Se dokument
-                    </a>
+                    <a href="{{ route('signing-room.portal.pdf', $signingParty) }}" target="_blank" class="btn-primary">Se dokument</a>
                 </div>
             </div>
-            <script>
-                (function() {
-                    var pdfUrl = @json(route('signing-room.portal.pdf', $signingParty));
-                    fetch(pdfUrl, { credentials: 'same-origin' })
-                        .then(function(res) {
-                            if (!res.ok) throw new Error('HTTP ' + res.status);
-                            return res.blob();
-                        })
-                        .then(function(blob) {
-                            var url = URL.createObjectURL(blob);
-                            var viewer = document.getElementById('pdf-viewer');
-                            viewer.src = url;
-                            viewer.style.display = 'block';
-                            document.getElementById('pdf-loading').style.display = 'none';
-                        })
-                        .catch(function() {
-                            document.getElementById('pdf-loading').style.display = 'none';
-                            document.getElementById('pdf-fallback').style.display = 'flex';
-                        });
-                })();
+            <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.2.67/pdf.min.mjs" type="module"></script>
+            <script type="module">
+                import * as pdfjsLib from 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.2.67/pdf.min.mjs';
+                pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.2.67/pdf.worker.min.mjs';
+
+                var pdfUrl = @json(route('signing-room.portal.pdf', $signingParty));
+                var container = document.getElementById('pdf-container');
+                var pagesEl = document.getElementById('pdf-pages');
+                var loadingEl = document.getElementById('pdf-loading');
+                var fallbackEl = document.getElementById('pdf-fallback');
+                var pageInfoEl = document.getElementById('pdf-page-info');
+
+                try {
+                    var res = await fetch(pdfUrl, { credentials: 'same-origin' });
+                    if (!res.ok) throw new Error('HTTP ' + res.status);
+                    var data = await res.arrayBuffer();
+                    var pdf = await pdfjsLib.getDocument({ data: data }).promise;
+
+                    loadingEl.style.display = 'none';
+                    pagesEl.style.display = 'flex';
+                    pageInfoEl.textContent = pdf.numPages + (pdf.numPages === 1 ? ' side' : ' sider');
+
+                    var containerWidth = container.clientWidth - 32;
+
+                    for (var i = 1; i <= pdf.numPages; i++) {
+                        var page = await pdf.getPage(i);
+                        var viewport = page.getViewport({ scale: 1 });
+                        var scale = containerWidth / viewport.width;
+                        var scaledViewport = page.getViewport({ scale: scale });
+
+                        var canvas = document.createElement('canvas');
+                        canvas.width = scaledViewport.width;
+                        canvas.height = scaledViewport.height;
+                        canvas.style.boxShadow = '0 2px 8px rgba(0,0,0,0.15)';
+                        canvas.style.borderRadius = '4px';
+                        canvas.style.background = 'white';
+                        canvas.style.maxWidth = '100%';
+
+                        pagesEl.appendChild(canvas);
+                        await page.render({ canvasContext: canvas.getContext('2d'), viewport: scaledViewport }).promise;
+                    }
+                } catch (e) {
+                    loadingEl.style.display = 'none';
+                    pagesEl.style.display = 'none';
+                    fallbackEl.style.display = 'flex';
+                }
             </script>
         </div>
 
