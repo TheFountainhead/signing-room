@@ -9,6 +9,7 @@ use Fountainhead\SigningRoom\Enums\SigningPartyStatus;
 use Fountainhead\SigningRoom\Models\SigningEnvelope;
 use Fountainhead\SigningRoom\Models\SigningParty;
 use Fountainhead\SigningRoom\Notifications\DocumentReadyNotification;
+use Fountainhead\SigningRoom\Notifications\EnvelopeCompletedNotification;
 use Illuminate\Support\Facades\Storage;
 
 class SigningRoomService
@@ -259,5 +260,10 @@ class SigningRoomService
         ]);
 
         $envelope->logEvent(SigningEventType::EnvelopeCompleted);
+
+        // Notify all parties that the envelope is completed
+        foreach ($envelope->parties as $party) {
+            $party->notify(new EnvelopeCompletedNotification($envelope));
+        }
     }
 }

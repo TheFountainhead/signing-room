@@ -50,8 +50,8 @@
                             </div>
                         </div>
                         @if($party->envelope->signed_document)
-                            <a href="{{ route('signing-room.portal.sign', $party) }}" class="btn-outline" style="white-space: nowrap;">
-                                Se dokument
+                            <a href="{{ route('signing-room.portal.download', $party->envelope) }}" class="btn-outline" style="white-space: nowrap;">
+                                Download PDF
                             </a>
                         @endif
                     </div>
