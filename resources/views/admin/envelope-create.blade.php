@@ -27,12 +27,47 @@
             </div>
 
             <div class="form-group">
-                <label class="form-label" for="document">PDF-dokument *</label>
-                <input wire:model="document" type="file" id="document" accept=".pdf"
-                       class="form-input" style="padding: 8px 16px;">
+                <label class="form-label">PDF-dokument *</label>
+                <input wire:model="document" type="file" id="document" accept=".pdf" style="display: none;">
+                <label for="document"
+                       style="display: flex; flex-direction: column; align-items: center; justify-content: center;
+                              padding: 32px 24px; border: 2px dashed var(--ft-border); border-radius: 8px;
+                              cursor: pointer; transition: all 0.15s ease; background: var(--ft-pink-light);"
+                       onmouseover="this.style.borderColor='var(--ft-blue)'; this.style.background='#F0F4FF'"
+                       onmouseout="this.style.borderColor='var(--ft-border)'; this.style.background='var(--ft-pink-light)'"
+                       ondragover="event.preventDefault(); this.style.borderColor='var(--ft-blue)'; this.style.background='#F0F4FF'"
+                       ondragleave="this.style.borderColor='var(--ft-border)'; this.style.background='var(--ft-pink-light)'"
+                       ondrop="event.preventDefault(); this.style.borderColor='var(--ft-border)'; this.style.background='var(--ft-pink-light)'">
+                    @if($document)
+                        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--ft-blue)" stroke-width="1.5" style="margin-bottom: 8px;">
+                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                            <polyline points="14 2 14 8 20 8"></polyline>
+                            <path d="M9 15l2 2 4-4" stroke="var(--ft-blue)"></path>
+                        </svg>
+                        <span style="font-weight: 600; color: var(--ft-dark); font-size: 0.9rem;">{{ $document->getClientOriginalName() }}</span>
+                        <span style="font-size: 0.8rem; color: var(--ft-grey); margin-top: 2px;">{{ number_format($document->getSize() / 1024, 0) }} KB — klik for at vælge en anden</span>
+                    @else
+                        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--ft-grey)" stroke-width="1.5" style="margin-bottom: 8px;">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                            <polyline points="17 8 12 3 7 8"></polyline>
+                            <line x1="12" y1="3" x2="12" y2="15"></line>
+                        </svg>
+                        <span style="font-weight: 600; color: var(--ft-dark); font-size: 0.9rem;">Klik for at vælge PDF</span>
+                        <span style="font-size: 0.8rem; color: var(--ft-grey); margin-top: 2px;">eller træk og slip her — maks 10 MB</span>
+                    @endif
+                </label>
+                <div wire:loading wire:target="document" style="margin-top: 8px;">
+                    <div style="height: 4px; background: var(--ft-border); border-radius: 2px; overflow: hidden;">
+                        <div style="height: 100%; width: 100%; background: var(--ft-blue); border-radius: 2px; animation: progress 1.5s ease-in-out infinite;"></div>
+                    </div>
+                    <span style="font-size: 0.8rem; color: var(--ft-grey);">Uploader...</span>
+                </div>
                 @error('document') <div class="form-error">{{ $message }}</div> @enderror
-                <div style="font-size: 0.8rem; color: var(--ft-grey); margin-top: 4px;">Maks 10 MB, kun PDF</div>
             </div>
+
+            <style>
+                @keyframes progress { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }
+            </style>
 
             <div style="display: flex; gap: 16px;">
                 <div class="form-group" style="flex: 1;">
