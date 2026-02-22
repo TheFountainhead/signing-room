@@ -60,6 +60,8 @@ Route::middleware(config('signing-room.routes.portal_middleware', ['web']))
             return response($disk->get($document), 200, [
                 'Content-Type' => 'application/pdf',
                 'Content-Disposition' => 'inline',
+                'X-Frame-Options' => 'SAMEORIGIN',
+                'Content-Security-Policy' => "frame-ancestors 'self'",
             ]);
         })->name('pdf');
 

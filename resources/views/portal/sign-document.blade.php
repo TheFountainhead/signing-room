@@ -19,13 +19,29 @@
     <div class="signing-layout fade-up">
         {{-- PDF Preview --}}
         <div class="card" style="padding: 0; overflow: hidden;">
-            <div style="padding: 16px 24px; border-bottom: 1px solid var(--ft-border); background: var(--ft-pink-light);">
+            <div style="padding: 16px 24px; border-bottom: 1px solid var(--ft-border); background: var(--ft-pink-light); display: flex; align-items: center; justify-content: space-between;">
                 <h3 style="font-size: 1rem; font-family: 'Source Sans 3', sans-serif;">Dokumentvisning</h3>
+                <a href="{{ route('signing-room.portal.pdf', $signingParty) }}" target="_blank" style="font-size: 0.85rem; font-weight: 600; color: var(--ft-blue);">
+                    Åbn i nyt vindue &nearr;
+                </a>
             </div>
-            <div style="height: 700px; background: #F5F5F5;">
-                <iframe src="{{ route('signing-room.portal.pdf', $signingParty) }}"
-                        style="width: 100%; height: 100%; border: none;"
-                        title="PDF-dokument"></iframe>
+            <div style="height: 700px; background: #F5F5F5; position: relative;">
+                <object data="{{ route('signing-room.portal.pdf', $signingParty) }}" type="application/pdf" style="width: 100%; height: 100%;">
+                    <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; padding: 32px; text-align: center;">
+                        <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#757575" stroke-width="1.5" style="margin-bottom: 16px;">
+                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                            <polyline points="14 2 14 8 20 8"></polyline>
+                            <line x1="16" y1="13" x2="8" y2="13"></line>
+                            <line x1="16" y1="17" x2="8" y2="17"></line>
+                            <polyline points="10 9 9 9 8 9"></polyline>
+                        </svg>
+                        <p style="color: var(--ft-dark); font-weight: 600; margin-bottom: 8px;">Dokumentet kan ikke vises her</p>
+                        <p style="color: var(--ft-grey); font-size: 0.9rem; margin-bottom: 16px;">Klik herunder for at se dokumentet i et nyt vindue.</p>
+                        <a href="{{ route('signing-room.portal.pdf', $signingParty) }}" target="_blank" class="btn-primary">
+                            Se dokument
+                        </a>
+                    </div>
+                </object>
             </div>
         </div>
 
