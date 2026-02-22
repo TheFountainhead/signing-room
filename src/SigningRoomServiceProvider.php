@@ -21,14 +21,14 @@ class SigningRoomServiceProvider extends ServiceProvider
         $this->loadViewsFrom(__DIR__ . '/../resources/views', 'signing-room');
         $this->loadMigrationsFrom(__DIR__ . '/../database/migrations');
 
-        // Register Livewire components — names must match the auto-generated format from the class FQCN
-        Livewire::component('fountainhead.signing-room.livewire.portal.landing', Livewire\Portal\Landing::class);
-        Livewire::component('fountainhead.signing-room.livewire.portal.dashboard', Livewire\Portal\Dashboard::class);
-        Livewire::component('fountainhead.signing-room.livewire.portal.sign-document', Livewire\Portal\SignDocument::class);
-        Livewire::component('fountainhead.signing-room.livewire.portal.signing-complete', Livewire\Portal\SigningComplete::class);
-        Livewire::component('fountainhead.signing-room.livewire.admin.envelope-list', Livewire\Admin\EnvelopeList::class);
-        Livewire::component('fountainhead.signing-room.livewire.admin.envelope-create', Livewire\Admin\EnvelopeCreate::class);
-        Livewire::component('fountainhead.signing-room.livewire.admin.envelope-show', Livewire\Admin\EnvelopeShow::class);
+        // Register Livewire components — fully qualified class names to avoid PHP namespace resolution issues
+        Livewire::component('fountainhead.signing-room.livewire.portal.landing', \Fountainhead\SigningRoom\Livewire\Portal\Landing::class);
+        Livewire::component('fountainhead.signing-room.livewire.portal.dashboard', \Fountainhead\SigningRoom\Livewire\Portal\Dashboard::class);
+        Livewire::component('fountainhead.signing-room.livewire.portal.sign-document', \Fountainhead\SigningRoom\Livewire\Portal\SignDocument::class);
+        Livewire::component('fountainhead.signing-room.livewire.portal.signing-complete', \Fountainhead\SigningRoom\Livewire\Portal\SigningComplete::class);
+        Livewire::component('fountainhead.signing-room.livewire.admin.envelope-list', \Fountainhead\SigningRoom\Livewire\Admin\EnvelopeList::class);
+        Livewire::component('fountainhead.signing-room.livewire.admin.envelope-create', \Fountainhead\SigningRoom\Livewire\Admin\EnvelopeCreate::class);
+        Livewire::component('fountainhead.signing-room.livewire.admin.envelope-show', \Fountainhead\SigningRoom\Livewire\Admin\EnvelopeShow::class);
 
         $this->loadRoutesFrom(__DIR__ . '/../routes/portal.php');
         $this->loadRoutesFrom(__DIR__ . '/../routes/admin.php');
