@@ -66,16 +66,28 @@ class EnvelopeShow extends Component
         $this->signingEnvelope->refresh();
     }
 
-    public function downloadOriginal(): StreamedResponse
+    public function downloadOriginal(): StreamedResponse|null
     {
         $disk = Storage::disk(config('signing-room.storage.disk', 'local'));
+
+        if (! $this->signingEnvelope->original_document || ! $disk->exists($this->signingEnvelope->original_document)) {
+            session()->flash('error', 'Den originale PDF kunne ikke findes. Filen kan være gået tabt ved et tidligere deploy.');
+
+            return null;
+        }
 
         return $disk->download($this->signingEnvelope->original_document, $this->signingEnvelope->title . '.pdf');
     }
 
-    public function downloadSigned(): StreamedResponse
+    public function downloadSigned(): StreamedResponse|null
     {
         $disk = Storage::disk(config('signing-room.storage.disk', 'local'));
+
+        if (! $this->signingEnvelope->signed_document || ! $disk->exists($this->signingEnvelope->signed_document)) {
+            session()->flash('error', 'Den signerede PDF kunne ikke findes. Filen kan være gået tabt ved et tidligere deploy.');
+
+            return null;
+        }
 
         return $disk->download($this->signingEnvelope->signed_document, $this->signingEnvelope->title . ' (signeret).pdf');
     }
