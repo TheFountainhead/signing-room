@@ -23,9 +23,12 @@ Route::middleware(config('signing-room.routes.portal_middleware', ['web']))
             ->name('signing-complete');
 
         Route::get('/download/{signingEnvelope:uuid}', function (SigningEnvelope $signingEnvelope) {
+            // Allow access via portal session OR authenticated admin user
             $email = session('signing_room_email');
+            $hasPortalSession = $email && $signingEnvelope->parties()->where('email', $email)->exists();
+            $hasAuthSession = auth()->check() && $signingEnvelope->parties()->where('email', auth()->user()->email)->exists();
 
-            if (! $email || ! $signingEnvelope->parties()->where('email', $email)->exists()) {
+            if (! $hasPortalSession && ! $hasAuthSession) {
                 abort(403, 'Du har ikke adgang til dette dokument.');
             }
 
@@ -40,11 +43,15 @@ Route::middleware(config('signing-room.routes.portal_middleware', ['web']))
         })->name('download');
 
         Route::get('/pdf/{signingParty:uuid}', function (SigningParty $signingParty) {
-            // Allow access if: signing token is valid OR session email matches
+            // Allow access if: session email matches, signing token is valid, or party already signed/rejected
             $email = session('signing_room_email');
             $hasSession = $email && $signingParty->email === $email;
+            $hasCompleted = in_array($signingParty->status, [
+                \Fountainhead\SigningRoom\Enums\SigningPartyStatus::Signed,
+                \Fountainhead\SigningRoom\Enums\SigningPartyStatus::Rejected,
+            ]);
 
-            if (! $hasSession && ! $signingParty->isTokenValid()) {
+            if (! $hasSession && ! $hasCompleted && ! $signingParty->isTokenValid()) {
                 abort(403);
             }
 
