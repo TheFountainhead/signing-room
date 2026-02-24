@@ -4,10 +4,11 @@ namespace Fountainhead\SigningRoom\Notifications;
 
 use Fountainhead\SigningRoom\Models\SigningEnvelope;
 use Illuminate\Bus\Queueable;
+use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Notifications\Messages\MailMessage;
 use Illuminate\Notifications\Notification;
 
-class EnvelopeCompletedNotification extends Notification
+class EnvelopeCompletedNotification extends Notification implements ShouldQueue
 {
     use Queueable;
 

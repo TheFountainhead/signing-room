@@ -94,6 +94,8 @@ class EnvelopeCreate extends Component
     {
         $this->validate();
 
+        set_time_limit(120);
+
         try {
             $path = $this->document->store(
                 config('signing-room.storage.path', 'signing-room'),

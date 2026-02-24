@@ -5,10 +5,11 @@ namespace Fountainhead\SigningRoom\Notifications;
 use Fountainhead\SigningRoom\Models\SigningEnvelope;
 use Fountainhead\SigningRoom\Models\SigningParty;
 use Illuminate\Bus\Queueable;
+use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Notifications\Messages\MailMessage;
 use Illuminate\Notifications\Notification;
 
-class DocumentReadyNotification extends Notification
+class DocumentReadyNotification extends Notification implements ShouldQueue
 {
     use Queueable;
 
