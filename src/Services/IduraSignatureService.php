@@ -82,8 +82,7 @@ GRAPHQL;
                     [
                         'criiptoVerify' => [
                             'acrValues' => $acrValues,
-                            // TODO: Re-enable uniqueEvidenceKey for production
-                            // 'uniqueEvidenceKey' => 'sub',
+                            'uniqueEvidenceKey' => 'sub',
                         ],
                     ],
                 ],
