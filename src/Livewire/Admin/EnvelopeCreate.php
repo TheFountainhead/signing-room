@@ -94,64 +94,61 @@ class EnvelopeCreate extends Component
     {
         $this->validate();
 
-        $path = $this->document->store(
-            config('signing-room.storage.path', 'signing-room'),
-            config('signing-room.storage.disk', 'local'),
-        );
-
-        // Validate PDF with Idura before creating the order
-        $disk = Storage::disk(config('signing-room.storage.disk', 'local'));
-        $pdfBase64 = base64_encode($disk->get($path));
-
-        $service = app(SigningRoomService::class);
-
         try {
-            $validation = $service->validateDocument($pdfBase64);
+            $path = $this->document->store(
+                config('signing-room.storage.path', 'signing-room'),
+                config('signing-room.storage.disk', 'local'),
+            );
 
-            if (! $validation['valid']) {
-                $disk->delete($path);
-                $errors = implode(', ', $validation['errors'] ?? ['Ukendt fejl']);
-                $this->addError('document', "PDF-dokumentet er ikke gyldigt: {$errors}");
+            // Validate PDF with Idura before creating the order
+            $disk = Storage::disk(config('signing-room.storage.disk', 'local'));
+            $pdfBase64 = base64_encode($disk->get($path));
+
+            $service = app(SigningRoomService::class);
+
+            try {
+                $validation = $service->validateDocument($pdfBase64);
+
+                if (! $validation['valid']) {
+                    $disk->delete($path);
+                    $errors = implode(', ', $validation['errors'] ?? ['Ukendt fejl']);
+                    $this->addError('document', "PDF-dokumentet er ikke gyldigt: {$errors}");
+
+                    return;
+                }
+            } catch (\Exception $e) {
+                // If validation service is unavailable, proceed anyway
+                report($e);
+            }
+
+            $envelope = $service->createEnvelope(
+                title: $this->title,
+                pdfPath: $path,
+                parties: $this->allParties(),
+                description: $this->description ?: null,
+                expiresInDays: $this->expiresInDays,
+                reminderInterval: $this->reminderInterval,
+                createdBy: auth()->id(),
+            );
+
+            // Check if signing service is configured before attempting to send
+            $idura = app(\Fountainhead\SigningRoom\Services\IduraSignatureService::class);
+            if (! $idura->isConfigured()) {
+                session()->flash('warning', 'Dokumentet er gemt som kladde. Digital signering kræver Idura API-nøgler.');
+                $this->redirect(route('signing-room.admin.show', $envelope));
 
                 return;
             }
-        } catch (\Exception $e) {
-            // If validation service is unavailable, proceed anyway
-            report($e);
-        }
 
-        $envelope = $service->createEnvelope(
-            title: $this->title,
-            pdfPath: $path,
-            parties: $this->allParties(),
-            description: $this->description ?: null,
-            expiresInDays: $this->expiresInDays,
-            reminderInterval: $this->reminderInterval,
-            createdBy: auth()->id(),
-        );
-
-        // Check if signing service is configured before attempting to send
-        $idura = app(\Fountainhead\SigningRoom\Services\IduraSignatureService::class);
-        if (! $idura->isConfigured()) {
-            session()->flash('warning', 'Dokumentet er gemt som kladde. Digital signering kræver Idura API-nøgler (IDURA_SIGNATURES_CLIENT_ID og IDURA_SIGNATURES_CLIENT_SECRET).');
-            $this->redirect(route('signing-room.admin.show', $envelope));
-
-            return;
-        }
-
-        try {
             $service->sendEnvelope($envelope);
-        } catch (\Exception $e) {
-            report($e);
-            session()->flash('error', 'Fejl ved afsendelse: ' . $e->getMessage());
+
+            session()->flash('success', 'Dokumentet er sendt til underskrift.');
+
             $this->redirect(route('signing-room.admin.show', $envelope));
-
-            return;
+        } catch (\Throwable $e) {
+            report($e);
+            $this->addError('document', 'Der opstod en fejl: ' . $e->getMessage());
         }
-
-        session()->flash('success', 'Dokumentet er sendt til underskrift.');
-
-        $this->redirect(route('signing-room.admin.show', $envelope));
     }
 
     public function saveDraft(): void
