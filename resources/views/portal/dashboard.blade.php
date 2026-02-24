@@ -49,11 +49,16 @@
                                 <span class="badge badge-green" style="margin-left: 8px;">Signeret</span>
                             </div>
                         </div>
-                        @if($party->envelope->signed_document)
-                            <a href="{{ route('signing-room.portal.download', $party->envelope) }}" class="btn-outline" style="white-space: nowrap;">
-                                Download PDF
+                        <div style="display: flex; gap: 8px;">
+                            <a href="{{ route('signing-room.portal.sign', $party) }}" class="btn-outline" style="white-space: nowrap;">
+                                Se dokument
                             </a>
-                        @endif
+                            @if($party->envelope->signed_document)
+                                <a href="{{ route('signing-room.portal.download', $party->envelope) }}" class="btn-primary" style="white-space: nowrap;">
+                                    Download PDF
+                                </a>
+                            @endif
+                        </div>
                     </div>
                 @endforeach
             </div>
