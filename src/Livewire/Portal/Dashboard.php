@@ -21,6 +21,7 @@ class Dashboard extends Component
 
         $parties = SigningParty::where('email', $email)
             ->with('envelope')
+            ->latest()
             ->get();
 
         $pending = $parties->filter(fn ($p) => in_array($p->status, [
