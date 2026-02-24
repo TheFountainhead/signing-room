@@ -183,7 +183,12 @@ class SigningRoomService
             ->where('role', SigningPartyRole::Signer->value)
             ->get();
 
-        foreach ($parties as $party) {
+        foreach ($parties as $index => $party) {
+            // Resend rate limit: 2 requests/sec — add delay between emails
+            if ($index > 0) {
+                usleep(600_000); // 600ms
+            }
+
             $party->notify(new DocumentReadyNotification($envelope, $party));
 
             $party->update([
