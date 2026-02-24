@@ -139,7 +139,15 @@ class EnvelopeCreate extends Component
             return;
         }
 
-        $service->sendEnvelope($envelope);
+        try {
+            $service->sendEnvelope($envelope);
+        } catch (\Exception $e) {
+            report($e);
+            session()->flash('error', 'Fejl ved afsendelse: ' . $e->getMessage());
+            $this->redirect(route('signing-room.admin.show', $envelope));
+
+            return;
+        }
 
         session()->flash('success', 'Dokumentet er sendt til underskrift.');
 
