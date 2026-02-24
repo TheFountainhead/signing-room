@@ -92,7 +92,12 @@ class EnvelopeCreate extends Component
 
     public function sendForSigning(): void
     {
-        $this->validate();
+        try {
+            $this->validate();
+        } catch (\Throwable $e) {
+            cache()->put('signing_room_last_error', 'Validation: ' . $e->getMessage() . ' at ' . $e->getFile() . ':' . $e->getLine(), 3600);
+            throw $e;
+        }
 
         set_time_limit(120);
 
@@ -148,6 +153,7 @@ class EnvelopeCreate extends Component
 
             $this->redirect(route('signing-room.admin.show', $envelope));
         } catch (\Throwable $e) {
+            cache()->put('signing_room_last_error', $e->getMessage() . ' at ' . $e->getFile() . ':' . $e->getLine() . "\n" . \Illuminate\Support\Str::limit($e->getTraceAsString(), 1000), 3600);
             report($e);
             $this->addError('document', 'Der opstod en fejl: ' . $e->getMessage());
         }
