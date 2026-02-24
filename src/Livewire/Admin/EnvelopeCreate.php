@@ -94,9 +94,13 @@ class EnvelopeCreate extends Component
     {
         try {
             $this->validate();
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            throw $e; // Let Livewire handle normal validation errors
         } catch (\Throwable $e) {
-            cache()->put('signing_room_last_error', 'Validation: ' . $e->getMessage() . ' at ' . $e->getFile() . ':' . $e->getLine(), 3600);
-            throw $e;
+            // File upload expired or other filesystem error during validation
+            $this->addError('document', 'Filen er udløbet. Upload venligst PDF-dokumentet igen.');
+
+            return;
         }
 
         set_time_limit(120);
