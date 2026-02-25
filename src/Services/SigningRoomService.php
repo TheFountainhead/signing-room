@@ -131,6 +131,10 @@ class SigningRoomService
      */
     public function handleSigned(SigningParty $party, ?array $signatureData = null): void
     {
+        if ($party->status === SigningPartyStatus::Signed) {
+            return;
+        }
+
         $party->update([
             'status' => SigningPartyStatus::Signed,
             'signed_at' => now(),
@@ -157,6 +161,10 @@ class SigningRoomService
      */
     public function handleRejected(SigningParty $party, ?string $reason = null): void
     {
+        if ($party->status === SigningPartyStatus::Rejected) {
+            return;
+        }
+
         $party->update([
             'status' => SigningPartyStatus::Rejected,
             'rejected_at' => now(),
