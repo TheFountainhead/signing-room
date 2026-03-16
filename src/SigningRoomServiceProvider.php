@@ -26,6 +26,9 @@ class SigningRoomServiceProvider extends ServiceProvider
         Livewire::component('fountainhead.signing-room.livewire.portal.dashboard', \Fountainhead\SigningRoom\Livewire\Portal\Dashboard::class);
         Livewire::component('fountainhead.signing-room.livewire.portal.sign-document', \Fountainhead\SigningRoom\Livewire\Portal\SignDocument::class);
         Livewire::component('fountainhead.signing-room.livewire.portal.signing-complete', \Fountainhead\SigningRoom\Livewire\Portal\SigningComplete::class);
+        Livewire::component('fountainhead.signing-room.livewire.portal.terms', \Fountainhead\SigningRoom\Livewire\Portal\Terms::class);
+        Livewire::component('fountainhead.signing-room.livewire.portal.privacy', \Fountainhead\SigningRoom\Livewire\Portal\Privacy::class);
+        Livewire::component('fountainhead.signing-room.livewire.portal.dpa', \Fountainhead\SigningRoom\Livewire\Portal\DataProcessingAgreement::class);
         Livewire::component('fountainhead.signing-room.livewire.admin.envelope-list', \Fountainhead\SigningRoom\Livewire\Admin\EnvelopeList::class);
         Livewire::component('fountainhead.signing-room.livewire.admin.envelope-create', \Fountainhead\SigningRoom\Livewire\Admin\EnvelopeCreate::class);
         Livewire::component('fountainhead.signing-room.livewire.admin.envelope-show', \Fountainhead\SigningRoom\Livewire\Admin\EnvelopeShow::class);

@@ -22,6 +22,15 @@ Route::middleware(config('signing-room.routes.portal_middleware', ['web']))
         Route::get('/complete', \Fountainhead\SigningRoom\Livewire\Portal\SigningComplete::class)
             ->name('signing-complete');
 
+        Route::get('/terms', \Fountainhead\SigningRoom\Livewire\Portal\Terms::class)
+            ->name('terms');
+
+        Route::get('/privacy', \Fountainhead\SigningRoom\Livewire\Portal\Privacy::class)
+            ->name('privacy');
+
+        Route::get('/dpa', \Fountainhead\SigningRoom\Livewire\Portal\DataProcessingAgreement::class)
+            ->name('dpa');
+
         Route::get('/download/{signingEnvelope:uuid}', function (SigningEnvelope $signingEnvelope) {
             // Allow access via portal session OR authenticated admin user
             $email = session('signing_room_email');

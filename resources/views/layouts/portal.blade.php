@@ -180,7 +180,14 @@
 
     <footer class="sr-footer">
         <div class="container">
-            <p>&copy; {{ date('Y') }} Frankston ApS &middot; sign.frankston.io</p>
+            <p style="margin-bottom: 8px;">&copy; {{ date('Y') }} Frankston ApS &middot; sign.frankston.io</p>
+            <p style="font-size: 0.8rem;">
+                <a href="{{ route('signing-room.portal.terms') }}" style="color: var(--ft-grey);">Vilkår</a>
+                &middot;
+                <a href="{{ route('signing-room.portal.privacy') }}" style="color: var(--ft-grey);">Privatlivspolitik</a>
+                &middot;
+                <a href="{{ route('signing-room.portal.dpa') }}" style="color: var(--ft-grey);">Databehandleraftale</a>
+            </p>
         </div>
     </footer>
 
