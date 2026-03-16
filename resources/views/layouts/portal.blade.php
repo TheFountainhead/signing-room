@@ -155,9 +155,23 @@
     @livewireStyles
 </head>
 <body>
+    @php
+        $branding = null;
+        if (isset($envelope) && config('signing-room.branding_resolver')) {
+            $resolver = config('signing-room.branding_resolver');
+            $branding = $resolver($envelope->user_id);
+        }
+    @endphp
+
     <header class="sr-header">
         <div class="container">
-            <a href="{{ route('signing-room.portal.landing') }}" class="sr-logo">Frankston</a>
+            <a href="{{ route('signing-room.portal.landing') }}" class="sr-logo">
+                @if($branding && !empty($branding['logo_url']))
+                    <img src="{{ $branding['logo_url'] }}" alt="{{ $branding['company_name'] ?? 'Frankston' }}" style="height: 36px;">
+                @else
+                    {{ $branding['company_name'] ?? 'Frankston' }}
+                @endif
+            </a>
             <div class="sr-header-actions">
                 @if(session('signing_room_email'))
                     <a href="{{ route('signing-room.portal.dashboard') }}">Mine dokumenter</a>

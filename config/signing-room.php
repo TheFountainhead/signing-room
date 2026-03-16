@@ -34,4 +34,11 @@ return [
         'admin_middleware' => ['web', 'auth'],
         'webhook_middleware' => ['api'],
     ],
+
+    // Callable that resolves branding for a given user_id.
+    // Should return ['company_name' => string, 'logo_url' => string|null] or null.
+    'branding_resolver' => null,
+
+    // Model class used for folders (allows host app to provide its own)
+    'folder_model' => 'App\\Models\\SigningRoomFolder',
 ];

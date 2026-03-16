@@ -62,6 +62,9 @@ class SignDocument extends Component
         return view('signing-room::portal.sign-document', [
             'envelope' => $envelope,
             'allParties' => $allParties,
-        ])->layout('signing-room::layouts.portal', ['title' => $envelope->title]);
+        ])->layout('signing-room::layouts.portal', [
+            'title' => $envelope->title,
+            'envelope' => $envelope,
+        ]);
     }
 }

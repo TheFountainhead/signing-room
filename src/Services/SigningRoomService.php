@@ -11,6 +11,7 @@ use Fountainhead\SigningRoom\Models\SigningParty;
 use Fountainhead\SigningRoom\Notifications\DocumentReadyNotification;
 use Fountainhead\SigningRoom\Notifications\EnvelopeCompletedNotification;
 use Fountainhead\SigningRoom\Notifications\PartyRejectedNotification;
+use Fountainhead\SigningRoom\Events\PartySignedEvent;
 use Illuminate\Support\Facades\Storage;
 
 class SigningRoomService
@@ -144,6 +145,8 @@ class SigningRoomService
         $envelope = $party->envelope;
 
         $envelope->logEvent(SigningEventType::PartySigned, $party);
+
+        PartySignedEvent::dispatch($envelope, $party);
 
         if ($envelope->isAllRoundsComplete()) {
             $this->completeEnvelope($envelope);

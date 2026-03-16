@@ -17,6 +17,7 @@ class SigningEnvelope extends Model
         'total_rounds' => 'integer',
         'current_round' => 'integer',
         'reminder_interval' => 'integer',
+        'retention_days' => 'integer',
         'expires_at' => 'datetime',
         'last_reminder_at' => 'datetime',
         'completed_at' => 'datetime',
@@ -77,6 +78,14 @@ class SigningEnvelope extends Model
             'user_agent' => request()->userAgent(),
             'created_at' => now(),
         ]);
+    }
+
+    public function folder()
+    {
+        return $this->belongsTo(
+            config('signing-room.folder_model', 'App\\Models\\SigningRoomFolder'),
+            'folder_id'
+        );
     }
 
     public function getRouteKeyName(): string
