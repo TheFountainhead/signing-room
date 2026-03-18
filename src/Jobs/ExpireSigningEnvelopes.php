@@ -9,6 +9,7 @@ use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
+use Illuminate\Support\Facades\Schema;
 
 class ExpireSigningEnvelopes implements ShouldQueue
 {
@@ -16,6 +17,10 @@ class ExpireSigningEnvelopes implements ShouldQueue
 
     public function handle(): void
     {
+        if (! Schema::hasTable('signing_envelopes')) {
+            return;
+        }
+
         SigningEnvelope::query()
             ->whereNotIn('status', [
                 EnvelopeStatus::Completed,

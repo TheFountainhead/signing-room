@@ -10,6 +10,7 @@ use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
+use Illuminate\Support\Facades\Schema;
 
 class SyncIduraSignatureStatus implements ShouldQueue
 {
@@ -17,6 +18,10 @@ class SyncIduraSignatureStatus implements ShouldQueue
 
     public function handle(IduraSignatureService $idura, SigningRoomService $service): void
     {
+        if (! Schema::hasTable('signing_envelopes')) {
+            return;
+        }
+
         $envelopes = SigningEnvelope::query()
             ->whereIn('status', [EnvelopeStatus::Sent, EnvelopeStatus::PartiallySigned])
             ->whereNotNull('idura_signature_order_id')

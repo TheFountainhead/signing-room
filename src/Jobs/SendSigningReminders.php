@@ -10,6 +10,7 @@ use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
+use Illuminate\Support\Facades\Schema;
 
 class SendSigningReminders implements ShouldQueue
 {
@@ -17,6 +18,10 @@ class SendSigningReminders implements ShouldQueue
 
     public function handle(): void
     {
+        if (! Schema::hasTable('signing_envelopes')) {
+            return;
+        }
+
         $envelopes = SigningEnvelope::query()
             ->whereIn('status', [EnvelopeStatus::Sent, EnvelopeStatus::PartiallySigned])
             ->whereNotNull('reminder_interval')
