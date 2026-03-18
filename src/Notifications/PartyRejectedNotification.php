@@ -24,12 +24,28 @@ class PartyRejectedNotification extends Notification
     {
         $adminUrl = route('signing-room.admin.show', $this->envelope);
 
-        return (new MailMessage)
+        $mail = (new MailMessage)
             ->subject('Afvist: ' . $this->envelope->title)
             ->view('signing-room::emails.party-rejected', [
                 'envelope' => $this->envelope,
                 'rejectedParty' => $this->rejectedParty,
                 'adminUrl' => $adminUrl,
             ]);
+
+        $branding = $this->resolveBranding();
+        if ($branding) {
+            $mail->from(config('mail.from.address'), $branding['company_name']);
+        }
+
+        return $mail;
+    }
+
+    protected function resolveBranding(): ?array
+    {
+        $resolver = config('signing-room.branding_resolver');
+        if ($resolver && $this->envelope->created_by) {
+            return $resolver($this->envelope->created_by);
+        }
+        return null;
     }
 }

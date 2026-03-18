@@ -22,12 +22,28 @@ class EnvelopeCompletedNotification extends Notification
     {
         $downloadUrl = route('signing-room.portal.download', $this->envelope->uuid);
 
-        return (new MailMessage)
+        $mail = (new MailMessage)
             ->subject('Underskrevet: ' . $this->envelope->title)
             ->view('signing-room::emails.envelope-completed', [
                 'envelope' => $this->envelope,
                 'party' => $notifiable,
                 'downloadUrl' => $downloadUrl,
             ]);
+
+        $branding = $this->resolveBranding();
+        if ($branding) {
+            $mail->from(config('mail.from.address'), $branding['company_name']);
+        }
+
+        return $mail;
+    }
+
+    protected function resolveBranding(): ?array
+    {
+        $resolver = config('signing-room.branding_resolver');
+        if ($resolver && $this->envelope->created_by) {
+            return $resolver($this->envelope->created_by);
+        }
+        return null;
     }
 }
