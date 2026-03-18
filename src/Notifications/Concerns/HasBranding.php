@@ -31,9 +31,14 @@ trait HasBranding
     protected function resolveBranding(SigningEnvelope $envelope): ?array
     {
         $resolver = config('signing-room.branding_resolver');
-        if ($resolver && $envelope->created_by) {
-            return $resolver($envelope->created_by);
+        if (! $resolver || ! $envelope->created_by) {
+            return null;
         }
-        return null;
+
+        if (is_string($resolver) && class_exists($resolver)) {
+            $resolver = app($resolver);
+        }
+
+        return is_callable($resolver) ? $resolver($envelope->created_by) : null;
     }
 }

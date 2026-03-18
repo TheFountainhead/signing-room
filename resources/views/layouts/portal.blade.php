@@ -159,7 +159,12 @@
         $branding = null;
         if (isset($envelope) && config('signing-room.branding_resolver')) {
             $resolver = config('signing-room.branding_resolver');
-            $branding = $resolver($envelope->created_by);
+            if (is_string($resolver) && class_exists($resolver)) {
+                $resolver = app($resolver);
+            }
+            if (is_callable($resolver)) {
+                $branding = $resolver($envelope->created_by);
+            }
         }
     @endphp
 
