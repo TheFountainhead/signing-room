@@ -4,11 +4,14 @@ namespace Fountainhead\SigningRoom\Notifications;
 
 use Fountainhead\SigningRoom\Models\SigningEnvelope;
 use Fountainhead\SigningRoom\Models\SigningParty;
+use Fountainhead\SigningRoom\Notifications\Concerns\HasBranding;
 use Illuminate\Notifications\Messages\MailMessage;
 use Illuminate\Notifications\Notification;
 
 class DocumentReadyNotification extends Notification
 {
+    use HasBranding;
+
     public function __construct(
         public SigningEnvelope $envelope,
         public ?SigningParty $party = null,
@@ -31,20 +34,6 @@ class DocumentReadyNotification extends Notification
                 'signingUrl' => $signingUrl,
             ]);
 
-        $branding = $this->resolveBranding();
-        if ($branding) {
-            $mail->from(config('mail.from.address'), $branding['company_name']);
-        }
-
-        return $mail;
-    }
-
-    protected function resolveBranding(): ?array
-    {
-        $resolver = config('signing-room.branding_resolver');
-        if ($resolver && $this->envelope->created_by) {
-            return $resolver($this->envelope->created_by);
-        }
-        return null;
+        return $this->applyBranding($mail, $this->envelope);
     }
 }
