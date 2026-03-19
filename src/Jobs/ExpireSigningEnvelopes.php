@@ -15,7 +15,10 @@ class ExpireSigningEnvelopes implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable;
 
-    public $queue = 'signing-room';
+    public function __construct()
+    {
+        $this->onQueue('signing-room');
+    }
 
     public function handle(): void
     {
