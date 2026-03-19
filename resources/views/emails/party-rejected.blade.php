@@ -1,4 +1,4 @@
-<x-signing-room::emails.layout :subject="'Afvist: ' . $envelope->title">
+<x-signing-room::emails.layout :subject="'Afvist: ' . $envelope->title" :envelope="$envelope">
     <h2>Dokument afvist</h2>
 
     <p>En underskriver har afvist dokumentet.</p>

@@ -1,9 +1,9 @@
-<x-signing-room::emails.layout :subject="'Dokument til underskrift: ' . $envelope->title">
+<x-signing-room::emails.layout :subject="'Dokument til underskrift: ' . $envelope->title" :envelope="$envelope">
     <h2>Dokument til underskrift</h2>
 
     <p>Hej {{ $party->name }},</p>
 
-    <p>Frankston har sendt dig et dokument til digital underskrift.</p>
+    <p>Du har modtaget et dokument til digital underskrift.</p>
 
     <div class="email-document">
         <div class="email-document-title">{{ $envelope->title }}</div>

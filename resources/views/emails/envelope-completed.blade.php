@@ -1,4 +1,4 @@
-<x-signing-room::emails.layout :subject="'Underskrevet: ' . $envelope->title">
+<x-signing-room::emails.layout :subject="'Underskrevet: ' . $envelope->title" :envelope="$envelope">
     <h2>Dokument underskrevet</h2>
 
     <p>Hej {{ $party->name }},</p>

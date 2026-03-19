@@ -1,4 +1,4 @@
-<x-signing-room::emails.layout :subject="'Påmindelse: Dokument venter på din underskrift'">
+<x-signing-room::emails.layout :subject="'Påmindelse: Dokument venter på din underskrift'" :envelope="$envelope">
     <h2>Påmindelse om underskrift</h2>
 
     <p>Hej {{ $party->name }},</p>
