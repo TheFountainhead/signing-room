@@ -16,6 +16,8 @@ class SyncIduraSignatureStatus implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable;
 
+    public $queue = 'signing-room';
+
     public function handle(IduraSignatureService $idura, SigningRoomService $service): void
     {
         if (! Schema::hasTable('signing_envelopes')) {

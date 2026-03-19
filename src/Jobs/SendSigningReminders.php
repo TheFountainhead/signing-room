@@ -16,6 +16,8 @@ class SendSigningReminders implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable;
 
+    public $queue = 'signing-room';
+
     public function handle(): void
     {
         if (! Schema::hasTable('signing_envelopes')) {
