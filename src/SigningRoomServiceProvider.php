@@ -53,6 +53,10 @@ class SigningRoomServiceProvider extends ServiceProvider
         }
 
         $this->app->booted(function () {
+            if (! config('signing-room.idura.client_id')) {
+                return;
+            }
+
             $schedule = $this->app->make(Schedule::class);
             $schedule->job(new SendSigningReminders)->dailyAt('09:00');
             $schedule->job(new ExpireSigningEnvelopes)->dailyAt('00:15');
