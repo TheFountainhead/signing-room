@@ -1,9 +1,6 @@
 <div>
     {{-- Header --}}
     <div class="fade-up" style="margin-bottom: 32px;">
-        <a href="{{ route('signing-room.portal.dashboard') }}" style="font-size: 0.875rem; color: var(--ft-grey); text-decoration: none; display: inline-block; margin-bottom: 8px;">
-            &larr; Tilbage til mine dokumenter
-        </a>
         <h1>{{ $envelope->title }}</h1>
         @if($envelope->description)
             <p style="color: var(--ft-grey); margin-top: 8px;">{{ $envelope->description }}</p>
@@ -23,7 +20,7 @@
                 <h3 style="font-size: 1rem; font-family: 'Source Sans 3', sans-serif; margin: 0;">Dokumentvisning</h3>
                 <div style="display: flex; align-items: center; gap: 16px;">
                     <span id="pdf-page-info" style="font-size: 0.85rem; color: var(--ft-grey);"></span>
-                    <a href="{{ route('signing-room.portal.pdf', $signingParty) }}" target="_blank" style="font-size: 0.85rem; font-weight: 600; color: var(--ft-blue);">
+                    <a href="{{ route('signing-room.portal.pdf', $signingParty) . '?' . http_build_query(['token' => $signingParty->signing_token]) }}" target="_blank" style="font-size: 0.85rem; font-weight: 600; color: var(--ft-blue);">
                         Åbn i nyt vindue &nearr;
                     </a>
                 </div>
@@ -43,7 +40,7 @@
                     </svg>
                     <p style="color: var(--ft-dark); font-weight: 600; margin-bottom: 8px;">Dokumentet kan ikke vises her</p>
                     <p style="color: var(--ft-grey); font-size: 0.9rem; margin-bottom: 16px;">Klik herunder for at åbne dokumentet.</p>
-                    <a href="{{ route('signing-room.portal.pdf', $signingParty) }}" target="_blank" class="btn-primary">Se dokument</a>
+                    <a href="{{ route('signing-room.portal.pdf', $signingParty) . '?' . http_build_query(['token' => $signingParty->signing_token]) }}" target="_blank" class="btn-primary">Se dokument</a>
                 </div>
             </div>
             <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.2.67/pdf.min.mjs" type="module"></script>
@@ -51,7 +48,7 @@
                 import * as pdfjsLib from 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.2.67/pdf.min.mjs';
                 pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.2.67/pdf.worker.min.mjs';
 
-                var pdfUrl = @json(route('signing-room.portal.pdf', $signingParty));
+                var pdfUrl = @json(route('signing-room.portal.pdf', $signingParty) . '?' . http_build_query(['token' => $signingParty->signing_token]));
                 var container = document.getElementById('pdf-container');
                 var pagesEl = document.getElementById('pdf-pages');
                 var loadingEl = document.getElementById('pdf-loading');
