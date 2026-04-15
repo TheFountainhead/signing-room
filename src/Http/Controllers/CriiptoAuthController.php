@@ -199,7 +199,7 @@ class CriiptoAuthController extends Controller
             report($e);
 
             return redirect()->route('signing-room.portal.landing')
-                ->with('error', 'Der opstod en fejl: ' . $e->getMessage());
+                ->with('error', 'Fejl i ' . basename($e->getFile()) . ':' . $e->getLine() . ' — ' . $e->getMessage());
         }
     }
 
