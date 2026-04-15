@@ -21,7 +21,7 @@ class SigningParty extends Model
         'signing_round' => 'integer',
         'reminder_count' => 'integer',
         'signature_data' => 'encrypted:json',
-        'cpr_encrypted' => 'encrypted',
+        // cpr_encrypted handled manually in cpr() mutator — cast causes decrypt(null) errors
         'signed_at' => 'datetime',
         'rejected_at' => 'datetime',
         'viewed_at' => 'datetime',
@@ -40,8 +40,11 @@ class SigningParty extends Model
     protected function cpr(): Attribute
     {
         return Attribute::make(
+            get: fn ($value, $attributes) => isset($attributes['cpr_encrypted'])
+                ? decrypt($attributes['cpr_encrypted'])
+                : null,
             set: fn (string $value) => [
-                'cpr_encrypted' => $value,
+                'cpr_encrypted' => encrypt($value),
                 'cpr_hash' => hash('sha256', $value),
             ],
         );
