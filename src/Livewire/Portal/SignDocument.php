@@ -20,9 +20,6 @@ class SignDocument extends Component
     {
         $this->signingParty = $signingParty->load('envelope.parties');
 
-        // Always set portal session for this party (ensures PDF access after MitID redirect)
-        session(['signing_room_email' => $this->signingParty->email]);
-
         // Mark as viewed on first access (skip if already signed/rejected)
         if (! $this->signingParty->viewed_at
             && $this->signingParty->status !== SigningPartyStatus::Signed

@@ -9,6 +9,15 @@ Route::middleware(config('signing-room.routes.portal_middleware', ['web']))
     ->prefix(config('signing-room.routes.portal_prefix', ''))
     ->name('signing-room.portal.')
     ->group(function () {
+        // MitID auth routes (throttled to prevent Criipto quota abuse)
+        Route::middleware('throttle:10,1')->group(function () {
+            Route::get('/auth/criipto', [\Fountainhead\SigningRoom\Http\Controllers\CriiptoAuthController::class, 'redirect'])
+                ->name('auth.redirect');
+
+            Route::get('/auth/criipto/callback', [\Fountainhead\SigningRoom\Http\Controllers\CriiptoAuthController::class, 'callback'])
+                ->name('auth.callback');
+        });
+
         Route::get('/', \Fountainhead\SigningRoom\Livewire\Portal\Landing::class)
             ->name('landing');
 
@@ -33,8 +42,8 @@ Route::middleware(config('signing-room.routes.portal_middleware', ['web']))
 
         Route::get('/download/{signingEnvelope:uuid}', function (SigningEnvelope $signingEnvelope) {
             // Allow access via portal session OR authenticated admin user
-            $email = session('signing_room_email');
-            $hasPortalSession = $email && $signingEnvelope->parties()->where('email', $email)->exists();
+            $cprHash = session('signing_room_cpr');
+            $hasPortalSession = $cprHash && $signingEnvelope->parties()->where('cpr_hash', $cprHash)->exists();
             $hasAuthSession = auth()->check() && $signingEnvelope->parties()->where('email', auth()->user()->email)->exists();
 
             if (! $hasPortalSession && ! $hasAuthSession) {
@@ -52,15 +61,14 @@ Route::middleware(config('signing-room.routes.portal_middleware', ['web']))
         })->name('download');
 
         Route::get('/pdf/{signingParty:uuid}', function (SigningParty $signingParty) {
-            // Allow access if: session email matches, signing token is valid, or party already signed/rejected
-            $email = session('signing_room_email');
-            $hasSession = $email && $signingParty->email === $email;
-            $hasCompleted = in_array($signingParty->status, [
-                \Fountainhead\SigningRoom\Enums\SigningPartyStatus::Signed,
-                \Fountainhead\SigningRoom\Enums\SigningPartyStatus::Rejected,
-            ]);
+            // Allow access if: CPR session matches OR signing token is valid
+            $cprHash = session('signing_room_cpr');
+            $hasCprSession = $cprHash && $signingParty->cpr_hash === $cprHash;
 
-            if (! $hasSession && ! $hasCompleted && ! $signingParty->isTokenValid()) {
+            $token = request()->query('token');
+            $hasValidToken = $token && $signingParty->signing_token && hash_equals($signingParty->signing_token, $token);
+
+            if (! $hasCprSession && ! $hasValidToken) {
                 abort(403);
             }
 
@@ -81,9 +89,6 @@ Route::middleware(config('signing-room.routes.portal_middleware', ['web']))
             ]);
         })->name('pdf');
 
-        Route::post('/sign-out', function () {
-            session()->forget('signing_room_email');
-
-            return redirect()->route('signing-room.portal.landing');
-        })->name('logout');
+        Route::post('/sign-out', [\Fountainhead\SigningRoom\Http\Controllers\CriiptoAuthController::class, 'logout'])
+            ->name('logout');
     });

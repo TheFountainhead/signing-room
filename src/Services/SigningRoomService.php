@@ -142,6 +142,15 @@ class SigningRoomService
             'signature_data' => $signatureData,
         ]);
 
+        // Fetch and store CPR from Idura evidence
+        if ($party->idura_signatory_id) {
+            $cpr = $this->idura->getSignatoryEvidence($party->idura_signatory_id);
+            if ($cpr) {
+                $party->cpr = $cpr;
+                $party->save();
+            }
+        }
+
         $envelope = $party->envelope;
 
         $envelope->logEvent(SigningEventType::PartySigned, $party);
