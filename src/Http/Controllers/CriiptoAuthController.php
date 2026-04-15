@@ -114,19 +114,31 @@ class CriiptoAuthController extends Controller
         // Check if any signing parties match this CPR
         $hasDocuments = SigningParty::where('cpr_hash', $cprHash)->exists();
 
-        // Backfill: if no CPR match, try matching on cpr_last_four for legacy parties
+        // Backfill: if no CPR match, try matching legacy parties without cpr_hash
         if (! $hasDocuments) {
+            // Try cpr_last_four first
             $lastFour = substr($cpr, -4);
-            $partiesWithoutCpr = SigningParty::where('cpr_last_four', $lastFour)
-                ->whereNull('cpr_hash')
+            $partiesWithoutCpr = SigningParty::whereNull('cpr_hash')
+                ->where(function ($query) use ($lastFour) {
+                    $query->where('cpr_last_four', $lastFour);
+                })
                 ->get();
+
+            // If no cpr_last_four match, store CPR in session for email verification step
+            if ($partiesWithoutCpr->isEmpty()) {
+                session()->regenerate();
+                session(['signing_room_pending_cpr' => $cpr]);
+
+                return redirect()->route('signing-room.portal.landing')
+                    ->with('verify_email', true);
+            }
 
             foreach ($partiesWithoutCpr as $party) {
                 $party->cpr = $cpr;
                 $party->save();
             }
 
-            $hasDocuments = $partiesWithoutCpr->isNotEmpty();
+            $hasDocuments = true;
         }
 
         if (! $hasDocuments) {
@@ -136,6 +148,44 @@ class CriiptoAuthController extends Controller
 
         // Set CPR session for dashboard access (regenerate to prevent session fixation)
         session()->regenerate();
+        session(['signing_room_cpr' => $cprHash]);
+
+        return redirect()->route('signing-room.portal.dashboard');
+    }
+
+    /**
+     * Verify email to link legacy signing parties to CPR after MitID login.
+     */
+    public function verifyEmail(Request $request): RedirectResponse
+    {
+        $cpr = session('signing_room_pending_cpr');
+
+        if (! $cpr) {
+            return redirect()->route('signing-room.portal.landing')
+                ->with('error', 'Session udløbet. Log ind med MitID igen.');
+        }
+
+        $request->validate([
+            'email' => ['required', 'email'],
+        ]);
+
+        $parties = SigningParty::where('email', $request->input('email'))
+            ->whereNull('cpr_hash')
+            ->get();
+
+        if ($parties->isEmpty()) {
+            return redirect()->route('signing-room.portal.landing')
+                ->with('error', 'Vi fandt ingen dokumenter til denne e-mailadresse.');
+        }
+
+        // Backfill CPR for matched parties
+        foreach ($parties as $party) {
+            $party->cpr = $cpr;
+            $party->save();
+        }
+
+        $cprHash = hash('sha256', $cpr);
+        session()->forget('signing_room_pending_cpr');
         session(['signing_room_cpr' => $cprHash]);
 
         return redirect()->route('signing-room.portal.dashboard');

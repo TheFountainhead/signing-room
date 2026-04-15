@@ -78,6 +78,27 @@
                         @endif
                     </div>
 
+                    @if($verifyEmail)
+                        <div style="margin-top: 16px; padding: 20px 24px; background: #E3F2FD; border: 1px solid #90CAF9; border-radius: 8px; text-align: left;">
+                            <p style="font-weight: 600; color: var(--ft-dark); margin: 0 0 8px; font-size: 1rem;">
+                                Bekræft din e-mail
+                            </p>
+                            <p style="color: var(--ft-grey); margin: 0 0 12px; font-size: 0.95rem;">
+                                Dit MitID er verificeret. Indtast den e-mail du brugte ved underskrift for at koble dine dokumenter.
+                            </p>
+                            <form action="{{ route('signing-room.portal.auth.verify-email') }}" method="POST">
+                                @csrf
+                                <div style="display: flex; gap: 12px; align-items: start;">
+                                    <input type="email" name="email" required placeholder="din@email.dk"
+                                           class="form-input" style="flex: 1; font-size: 1rem; padding: 12px 16px;">
+                                    <button type="submit" class="btn-primary" style="padding: 12px 24px; white-space: nowrap;">
+                                        Bekræft
+                                    </button>
+                                </div>
+                            </form>
+                        </div>
+                    @endif
+
                     @if($error)
                         <div style="margin-top: 16px; padding: 12px 16px; background: #FFF8E1; border: 1px solid #FFE082; border-radius: 6px;">
                             <p style="color: #F57F17; font-size: 0.9rem; font-weight: 600; margin: 0;">

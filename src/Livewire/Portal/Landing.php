@@ -13,6 +13,7 @@ class Landing extends Component
         return view('signing-room::portal.landing', [
             'hasCriiptoVerify' => $hasCriiptoVerify,
             'error' => session('error'),
+            'verifyEmail' => session('verify_email', false),
         ])->layout('signing-room::layouts.portal', ['title' => 'Underskriftrum']);
     }
 }

@@ -16,6 +16,9 @@ Route::middleware(config('signing-room.routes.portal_middleware', ['web']))
 
             Route::get('/auth/criipto/callback', [\Fountainhead\SigningRoom\Http\Controllers\CriiptoAuthController::class, 'callback'])
                 ->name('auth.callback');
+
+            Route::post('/auth/verify-email', [\Fountainhead\SigningRoom\Http\Controllers\CriiptoAuthController::class, 'verifyEmail'])
+                ->name('auth.verify-email');
         });
 
         Route::get('/', \Fountainhead\SigningRoom\Livewire\Portal\Landing::class)
