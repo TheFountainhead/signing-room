@@ -158,39 +158,49 @@ class CriiptoAuthController extends Controller
      */
     public function verifyEmail(Request $request): RedirectResponse
     {
-        $encryptedCpr = session('signing_room_pending_cpr');
-        $cprHash = session('signing_room_pending_cpr_hash');
+        try {
+            $encryptedCpr = session('signing_room_pending_cpr');
+            $cprHash = session('signing_room_pending_cpr_hash');
 
-        if (! $encryptedCpr || ! $cprHash) {
+            if (! $encryptedCpr || ! $cprHash) {
+                return redirect()->route('signing-room.portal.landing')
+                    ->with('error', 'Session udløbet. Log ind med MitID igen.');
+            }
+
+            $email = $request->input('email');
+            if (! $email || ! filter_var($email, FILTER_VALIDATE_EMAIL)) {
+                return redirect()->route('signing-room.portal.landing')
+                    ->with('error', 'Indtast en gyldig e-mailadresse.')
+                    ->with('verify_email', true);
+            }
+
+            $parties = SigningParty::where('email', $email)
+                ->whereNull('cpr_hash')
+                ->get();
+
+            if ($parties->isEmpty()) {
+                return redirect()->route('signing-room.portal.landing')
+                    ->with('error', 'Vi fandt ingen dokumenter til denne e-mailadresse.');
+            }
+
+            // Backfill CPR for matched parties
+            $cpr = decrypt($encryptedCpr);
+            foreach ($parties as $party) {
+                $party->cpr = $cpr;
+                $party->save();
+            }
+
+            session()->forget(['signing_room_pending_cpr', 'signing_room_pending_cpr_hash']);
+            session()->regenerate();
+            session(['signing_room_cpr' => $cprHash]);
+
+            return redirect()->route('signing-room.portal.dashboard');
+        } catch (\Throwable $e) {
+            report($e);
+
             return redirect()->route('signing-room.portal.landing')
-                ->with('error', 'Session udløbet. Log ind med MitID igen.');
+                ->with('error', 'Der opstod en fejl: ' . $e->getMessage());
         }
-
-        $request->validate([
-            'email' => ['required', 'email'],
-        ]);
-
-        $parties = SigningParty::where('email', $request->input('email'))
-            ->whereNull('cpr_hash')
-            ->get();
-
-        if ($parties->isEmpty()) {
-            return redirect()->route('signing-room.portal.landing')
-                ->with('error', 'Vi fandt ingen dokumenter til denne e-mailadresse.');
-        }
-
-        // Backfill CPR for matched parties
-        $cpr = decrypt($encryptedCpr);
-        foreach ($parties as $party) {
-            $party->cpr = $cpr;
-            $party->save();
-        }
-
-        session()->forget(['signing_room_pending_cpr', 'signing_room_pending_cpr_hash']);
-        session()->regenerate();
-        session(['signing_room_cpr' => $cprHash]);
-
-        return redirect()->route('signing-room.portal.dashboard');
     }
 
     /**
