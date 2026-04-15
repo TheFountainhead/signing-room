@@ -26,8 +26,8 @@
                                 @endif
                             </div>
                         </div>
-                        <a href="{{ route('signing-room.portal.sign', $party) }}" class="btn-primary" style="white-space: nowrap;">
-                            Åbn dokument
+                        <a href="{{ $party->signingUrl() }}" class="btn-primary" style="white-space: nowrap;">
+                            Underskriv
                         </a>
                     </div>
                 @endforeach
@@ -50,7 +50,7 @@
                             </div>
                         </div>
                         <div style="display: flex; gap: 8px;">
-                            <a href="{{ route('signing-room.portal.sign', $party) }}" class="btn-outline" style="white-space: nowrap;">
+                            <a href="{{ $party->signingUrl() }}" class="btn-outline" style="white-space: nowrap;">
                                 Se dokument
                             </a>
                             @if($party->envelope->signed_document)
