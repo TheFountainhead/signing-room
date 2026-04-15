@@ -39,6 +39,11 @@ class SigningRoomServiceProvider extends ServiceProvider
         $this->loadRoutesFrom(__DIR__ . '/../routes/webhook.php');
 
         if ($this->app->runningInConsole()) {
+            $this->commands([
+                \Fountainhead\SigningRoom\Console\Commands\BackfillCprFromIdura::class,
+            ]);
+
+
             $this->publishes([
                 __DIR__ . '/../config/signing-room.php' => config_path('signing-room.php'),
             ], 'signing-room-config');
