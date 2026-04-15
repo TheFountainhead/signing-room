@@ -124,10 +124,10 @@ class CriiptoAuthController extends Controller
                 })
                 ->get();
 
-            // If no cpr_last_four match, store CPR in session for email verification step
+            // If no cpr_last_four match, store CPR for email verification step
             if ($partiesWithoutCpr->isEmpty()) {
-                session()->regenerate();
-                session(['signing_room_pending_cpr' => $cpr]);
+                session(['signing_room_pending_cpr' => encrypt($cpr)]);
+                session(['signing_room_pending_cpr_hash' => $cprHash]);
 
                 return redirect()->route('signing-room.portal.landing')
                     ->with('verify_email', true);
@@ -158,9 +158,10 @@ class CriiptoAuthController extends Controller
      */
     public function verifyEmail(Request $request): RedirectResponse
     {
-        $cpr = session('signing_room_pending_cpr');
+        $encryptedCpr = session('signing_room_pending_cpr');
+        $cprHash = session('signing_room_pending_cpr_hash');
 
-        if (! $cpr) {
+        if (! $encryptedCpr || ! $cprHash) {
             return redirect()->route('signing-room.portal.landing')
                 ->with('error', 'Session udløbet. Log ind med MitID igen.');
         }
@@ -179,13 +180,14 @@ class CriiptoAuthController extends Controller
         }
 
         // Backfill CPR for matched parties
+        $cpr = decrypt($encryptedCpr);
         foreach ($parties as $party) {
             $party->cpr = $cpr;
             $party->save();
         }
 
-        $cprHash = hash('sha256', $cpr);
-        session()->forget('signing_room_pending_cpr');
+        session()->forget(['signing_room_pending_cpr', 'signing_room_pending_cpr_hash']);
+        session()->regenerate();
         session(['signing_room_cpr' => $cprHash]);
 
         return redirect()->route('signing-room.portal.dashboard');
