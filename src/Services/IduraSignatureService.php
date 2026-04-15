@@ -254,6 +254,43 @@ GRAPHQL;
     }
 
     /**
+     * Fetch signatory evidence (identity claims) after signing.
+     *
+     * Returns the full CPR number from MitID evidence, or null if unavailable.
+     */
+    public function getSignatoryEvidence(string $signatoryId): ?string
+    {
+        $query = <<<'GRAPHQL'
+query GetSignatoryEvidence($signatoryId: ID!) {
+    signatory(id: $signatoryId) {
+        evidence {
+            ... on CriiptoVerifySignatureEvidence {
+                claims
+            }
+        }
+    }
+}
+GRAPHQL;
+
+        try {
+            $result = $this->query($query, ['signatoryId' => $signatoryId]);
+
+            $evidence = $result['signatory']['evidence'] ?? [];
+
+            foreach ($evidence as $item) {
+                $cpr = $item['claims']['cprNumberIdentifier'] ?? null;
+                if ($cpr) {
+                    return $cpr;
+                }
+            }
+        } catch (\RuntimeException $e) {
+            report($e);
+        }
+
+        return null;
+    }
+
+    /**
      * Validate a PDF document before creating an order.
      *
      * @return array{valid: bool, errors: array, fixable: bool}
