@@ -114,6 +114,21 @@ class CriiptoAuthController extends Controller
         // Check if any signing parties match this CPR
         $hasDocuments = SigningParty::where('cpr_hash', $cprHash)->exists();
 
+        // Backfill: if no CPR match, try matching on cpr_last_four for legacy parties
+        if (! $hasDocuments) {
+            $lastFour = substr($cpr, -4);
+            $partiesWithoutCpr = SigningParty::where('cpr_last_four', $lastFour)
+                ->whereNull('cpr_hash')
+                ->get();
+
+            foreach ($partiesWithoutCpr as $party) {
+                $party->cpr = $cpr;
+                $party->save();
+            }
+
+            $hasDocuments = $partiesWithoutCpr->isNotEmpty();
+        }
+
         if (! $hasDocuments) {
             return redirect()->route('signing-room.portal.landing')
                 ->with('error', 'Vi fandt ingen dokumenter tilknyttet dit MitID.');
