@@ -10,16 +10,16 @@ class Dashboard extends Component
 {
     public function mount(): void
     {
-        if (! session('signing_room_email')) {
+        if (! session('signing_room_cpr')) {
             $this->redirect(route('signing-room.portal.landing'));
         }
     }
 
     public function render()
     {
-        $email = session('signing_room_email');
+        $cprHash = session('signing_room_cpr');
 
-        $parties = SigningParty::where('email', $email)
+        $parties = SigningParty::where('cpr_hash', $cprHash)
             ->with('envelope')
             ->latest()
             ->get();
