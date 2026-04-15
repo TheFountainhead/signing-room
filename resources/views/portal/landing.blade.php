@@ -45,41 +45,47 @@
             </div>
             <div style="padding: 48px; text-align: center;">
                 <h1 style="margin-bottom: 16px;">Underskriftrum</h1>
-                <p style="color: var(--ft-dark); margin-bottom: 8px; font-size: 1.125rem; line-height: 1.7;">
+                <p style="color: var(--ft-dark); margin-bottom: 32px; font-size: 1.125rem; line-height: 1.7;">
                     Her kan du underskrive dokumenter sikkert med MitID.
                 </p>
-                <p style="color: var(--ft-grey); margin-bottom: 40px; font-size: 1rem;">
-                    Indtast din e-mail for at se dine dokumenter og foretage digitale underskrifter.
-                </p>
 
-                <form wire:submit="login" style="max-width: 400px; margin: 0 auto;">
-                    <div style="display: flex; gap: 12px; align-items: start;">
-                        <div style="flex: 1;">
-                            <input type="email"
-                                   wire:model="email"
-                                   class="form-input"
-                                   placeholder="din@email.dk"
-                                   style="font-size: 1.05rem; padding: 14px 20px;">
-                            @error('email')
-                                <p class="form-error">{{ $message }}</p>
-                            @enderror
+                <div style="max-width: 440px; margin: 0 auto;">
+                    {{-- Info: email link --}}
+                    <div style="padding: 20px 24px; background: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 8px; margin-bottom: 16px; text-align: left;">
+                        <p style="font-weight: 600; color: var(--ft-dark); margin: 0 0 4px; font-size: 1rem;">
+                            Har du modtaget et link?
+                        </p>
+                        <p style="color: var(--ft-grey); margin: 0; font-size: 0.95rem;">
+                            Klik på linket i din e-mail for at se og underskrive dit dokument.
+                        </p>
+                    </div>
+
+                    {{-- MitID login --}}
+                    <div style="padding: 20px 24px; background: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 8px; text-align: left;">
+                        <p style="font-weight: 600; color: var(--ft-dark); margin: 0 0 8px; font-size: 1rem;">
+                            Har du allerede underskrevet?
+                        </p>
+                        <p style="color: var(--ft-grey); margin: 0 0 16px; font-size: 0.95rem;">
+                            Log ind med MitID for at se dine dokumenter.
+                        </p>
+
+                        @if($hasCriiptoVerify)
+                            <a href="{{ route('signing-room.auth.redirect') }}"
+                               class="btn-primary"
+                               style="display: inline-block; font-size: 1.05rem; padding: 14px 32px; text-decoration: none; text-align: center; width: 100%; box-sizing: border-box;">
+                                Log ind med MitID
+                            </a>
+                        @endif
+                    </div>
+
+                    @if($error)
+                        <div style="margin-top: 16px; padding: 12px 16px; background: #FFF8E1; border: 1px solid #FFE082; border-radius: 6px;">
+                            <p style="color: #F57F17; font-size: 0.9rem; font-weight: 600; margin: 0;">
+                                {{ $error }}
+                            </p>
                         </div>
-                        <button type="submit" class="btn-primary" style="font-size: 1.05rem; padding: 14px 32px; white-space: nowrap;">
-                            Log ind
-                        </button>
-                    </div>
-                </form>
-
-                @if($notFound)
-                    <div style="margin-top: 16px; max-width: 400px; margin-left: auto; margin-right: auto; padding: 12px 16px; background: #FFF8E1; border: 1px solid #FFE082; border-radius: 6px;">
-                        <p style="color: #F57F17; font-size: 0.9rem; font-weight: 600; margin: 0;">
-                            Vi fandt ingen dokumenter til denne e-mailadresse.
-                        </p>
-                        <p style="color: #F57F17; font-size: 0.85rem; margin: 4px 0 0;">
-                            Kontrollér at du har indtastet den korrekte e-mail, eller kontakt afsenderen.
-                        </p>
-                    </div>
-                @endif
+                    @endif
+                </div>
 
                 <div style="margin-top: 24px; font-size: 0.875rem; color: var(--ft-grey);">
                     <p>Sikker digital underskrift med MitID</p>
