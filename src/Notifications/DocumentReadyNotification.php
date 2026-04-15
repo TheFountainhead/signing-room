@@ -24,7 +24,7 @@ class DocumentReadyNotification extends Notification
 
     public function toMail($notifiable): MailMessage
     {
-        $signingUrl = route('signing-room.portal.sign', $notifiable->uuid);
+        $signingUrl = $notifiable->signingUrl();
 
         $mail = (new MailMessage)
             ->subject('Dokument til underskrift: ' . $this->envelope->title)
