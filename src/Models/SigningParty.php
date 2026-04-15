@@ -3,6 +3,7 @@
 namespace Fountainhead\SigningRoom\Models;
 
 use Fountainhead\SigningRoom\Enums\SigningPartyStatus;
+use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -20,6 +21,7 @@ class SigningParty extends Model
         'signing_round' => 'integer',
         'reminder_count' => 'integer',
         'signature_data' => 'encrypted:json',
+        'cpr_encrypted' => 'encrypted',
         'signed_at' => 'datetime',
         'rejected_at' => 'datetime',
         'viewed_at' => 'datetime',
@@ -33,6 +35,22 @@ class SigningParty extends Model
             $party->uuid ??= Str::uuid()->toString();
             $party->signing_token ??= Str::random(64);
         });
+    }
+
+    protected function cpr(): Attribute
+    {
+        return Attribute::make(
+            set: fn (string $value) => [
+                'cpr_encrypted' => $value,
+                'cpr_hash' => hash('sha256', $value),
+            ],
+        );
+    }
+
+    public function signingUrl(): string
+    {
+        return route('signing-room.portal.sign', $this->uuid)
+            . '?' . http_build_query(['token' => $this->signing_token]);
     }
 
     public function envelope(): BelongsTo
