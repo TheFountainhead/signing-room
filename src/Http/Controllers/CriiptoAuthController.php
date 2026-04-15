@@ -90,6 +90,11 @@ class CriiptoAuthController extends Controller
 
         $payload = json_decode(base64_decode(strtr($parts[1], '-_', '+/')), true);
 
+        if (! is_array($payload)) {
+            return redirect()->route('signing-room.portal.landing')
+                ->with('error', 'Ugyldigt token fra MitID.');
+        }
+
         // Verify issuer and audience
         $expectedIssuer = 'https://' . $config['domain'];
         if (($payload['iss'] ?? '') !== $expectedIssuer || ($payload['aud'] ?? '') !== $config['client_id']) {
@@ -114,7 +119,8 @@ class CriiptoAuthController extends Controller
                 ->with('error', 'Vi fandt ingen dokumenter tilknyttet dit MitID.');
         }
 
-        // Set CPR session for dashboard access
+        // Set CPR session for dashboard access (regenerate to prevent session fixation)
+        session()->regenerate();
         session(['signing_room_cpr' => $cprHash]);
 
         return redirect()->route('signing-room.portal.dashboard');

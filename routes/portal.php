@@ -66,7 +66,7 @@ Route::middleware(config('signing-room.routes.portal_middleware', ['web']))
             $hasCprSession = $cprHash && $signingParty->cpr_hash === $cprHash;
 
             $token = request()->query('token');
-            $hasValidToken = $token && hash_equals($signingParty->signing_token, $token);
+            $hasValidToken = $token && $signingParty->signing_token && hash_equals($signingParty->signing_token, $token);
 
             if (! $hasCprSession && ! $hasValidToken) {
                 abort(403);

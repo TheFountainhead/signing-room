@@ -24,7 +24,7 @@ class ValidateSigningToken
         // Validate token from URL query parameter
         $token = $request->query('token');
 
-        if (! $token || ! hash_equals($party->signing_token, $token)) {
+        if (! $token || ! $party->signing_token || ! hash_equals($party->signing_token, $token)) {
             abort(403, 'Ugyldigt eller manglende signing-token.');
         }
 
