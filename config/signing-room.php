@@ -10,6 +10,12 @@ return [
         'environment' => env('IDURA_ENVIRONMENT', 'TEST'),
     ],
 
+    'criipto_verify' => [
+        'client_id' => env('CRIIPTO_VERIFY_CLIENT_ID'),
+        'client_secret' => env('CRIIPTO_VERIFY_CLIENT_SECRET'),
+        'domain' => env('CRIIPTO_VERIFY_DOMAIN'),
+    ],
+
     'defaults' => [
         'expires_in_days' => 30,
         'reminder_interval' => 7,
