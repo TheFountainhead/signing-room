@@ -126,7 +126,7 @@ class CriiptoAuthController extends Controller
 
             // If no cpr_last_four match, store CPR for email verification step
             if ($partiesWithoutCpr->isEmpty()) {
-                session(['signing_room_pending_cpr' => $cpr]);
+                session(['signing_room_pending_cpr' => base64_encode($cpr)]);
                 session(['signing_room_pending_cpr_hash' => $cprHash]);
 
                 return redirect()->route('signing-room.portal.landing')
@@ -184,7 +184,7 @@ class CriiptoAuthController extends Controller
             }
 
             // Backfill CPR for matched parties
-            $cpr = $encryptedCpr;
+            $cpr = base64_decode($encryptedCpr);
             foreach ($parties as $party) {
                 $party->cpr = $cpr;
                 $party->save();
