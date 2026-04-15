@@ -70,7 +70,7 @@
                         </p>
 
                         @if($hasCriiptoVerify)
-                            <a href="{{ route('signing-room.auth.redirect') }}"
+                            <a href="{{ route('signing-room.portal.auth.redirect') }}"
                                class="btn-primary"
                                style="display: inline-block; font-size: 1.05rem; padding: 14px 32px; text-decoration: none; text-align: center; width: 100%; box-sizing: border-box;">
                                 Log ind med MitID

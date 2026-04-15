@@ -25,7 +25,7 @@ class CriiptoAuthController extends Controller
         $params = [
             'response_type' => 'code',
             'client_id' => $config['client_id'],
-            'redirect_uri' => route('signing-room.auth.callback'),
+            'redirect_uri' => route('signing-room.portal.auth.callback'),
             'scope' => 'openid',
             'acr_values' => 'urn:grn:authn:dk:mitid:low',
             'state' => $state,
@@ -65,7 +65,7 @@ class CriiptoAuthController extends Controller
         $tokenResponse = Http::asForm()->post('https://' . $config['domain'] . '/oauth2/token', [
             'grant_type' => 'authorization_code',
             'code' => $code,
-            'redirect_uri' => route('signing-room.auth.callback'),
+            'redirect_uri' => route('signing-room.portal.auth.callback'),
             'client_id' => $config['client_id'],
             'client_secret' => $config['client_secret'],
         ]);
