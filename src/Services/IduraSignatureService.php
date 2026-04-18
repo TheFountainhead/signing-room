@@ -257,15 +257,35 @@ GRAPHQL;
      * Fetch signatory evidence (identity claims) after signing.
      *
      * Returns the full CPR number from MitID evidence, or null if unavailable.
+     *
+     * Claims live on JWTSignature (name/value pairs), which is reached via
+     * signatory → signatureOrder → documents[] → signatures[]. When the
+     * evidence provider wraps multiple sources, Idura returns a
+     * CompositeSignature whose `signatures` list contains the JWTSignature.
      */
     public function getSignatoryEvidence(string $signatoryId): ?string
     {
         $query = <<<'GRAPHQL'
-query GetSignatoryEvidence($signatoryId: ID!) {
-    signatory(id: $signatoryId) {
-        evidence {
-            ... on CriiptoVerifySignatureEvidence {
-                claims
+query GetSignatoryEvidence($id: ID!) {
+    signatory(id: $id) {
+        id
+        signatureOrder {
+            documents {
+                signatures {
+                    __typename
+                    signatory { id }
+                    ... on JWTSignature {
+                        claims { name value }
+                    }
+                    ... on CompositeSignature {
+                        signatures {
+                            __typename
+                            ... on JWTSignature {
+                                claims { name value }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -273,18 +293,59 @@ query GetSignatoryEvidence($signatoryId: ID!) {
 GRAPHQL;
 
         try {
-            $result = $this->query($query, ['signatoryId' => $signatoryId]);
+            $result = $this->query($query, ['id' => $signatoryId]);
 
-            $evidence = $result['signatory']['evidence'] ?? [];
+            $documents = $result['signatory']['signatureOrder']['documents'] ?? [];
 
-            foreach ($evidence as $item) {
-                $cpr = $item['claims']['cprNumberIdentifier'] ?? null;
-                if ($cpr) {
-                    return $cpr;
+            foreach ($documents as $document) {
+                foreach ($document['signatures'] ?? [] as $signature) {
+                    if (($signature['signatory']['id'] ?? null) !== $signatoryId) {
+                        continue;
+                    }
+
+                    $cpr = $this->extractCprFromSignature($signature);
+                    if ($cpr) {
+                        return $cpr;
+                    }
                 }
             }
         } catch (\RuntimeException $e) {
             report($e);
+        }
+
+        return null;
+    }
+
+    private function extractCprFromSignature(array $signature): ?string
+    {
+        $typename = $signature['__typename'] ?? null;
+
+        if ($typename === 'JWTSignature') {
+            return $this->findClaim($signature['claims'] ?? [], 'cprNumberIdentifier');
+        }
+
+        if ($typename === 'CompositeSignature') {
+            foreach ($signature['signatures'] ?? [] as $inner) {
+                if (($inner['__typename'] ?? null) !== 'JWTSignature') {
+                    continue;
+                }
+
+                $cpr = $this->findClaim($inner['claims'] ?? [], 'cprNumberIdentifier');
+                if ($cpr) {
+                    return $cpr;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private function findClaim(array $claims, string $name): ?string
+    {
+        foreach ($claims as $claim) {
+            if (($claim['name'] ?? null) === $name) {
+                return $claim['value'] ?? null;
+            }
         }
 
         return null;
