@@ -83,6 +83,11 @@ GRAPHQL;
                         'criiptoVerify' => [
                             'acrValues' => $acrValues,
                             'uniqueEvidenceKey' => 'sub',
+                            // Request MitID ssn scope so the signing JWT carries
+                            // cprNumberIdentifier. Without this, claims are limited
+                            // to name/birthdate/LoA and cpr_hash stays NULL on the
+                            // party after handleSigned().
+                            'scope' => 'openid ssn',
                         ],
                     ],
                 ],
