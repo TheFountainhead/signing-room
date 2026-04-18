@@ -31,6 +31,8 @@ abstract class TestCase extends OrchestraTestCase
 
         // Set a known Criipto client_id so hasCriiptoVerify = true in Landing
         $app['config']->set('signing-room.criipto_verify.client_id', 'test-criipto-client');
+        $app['config']->set('signing-room.criipto_verify.client_secret', 'test-criipto-secret');
+        $app['config']->set('signing-room.criipto_verify.domain', 'test.criipto.id');
 
         // Encryption key required for CPR mutator (32 random bytes, base64-encoded = AES-256 compatible)
         $app['config']->set('app.key', 'base64:xK+HZZkk5pubzaLOHrWwLYQNipW8jHI5BJHdmShF2Qo=');

@@ -146,6 +146,19 @@ class CriiptoAuthController extends Controller
                 ->with('error', 'Vi fandt ingen dokumenter tilknyttet dit MitID.');
         }
 
+        // Backfill any orphan parties that share an email with this CPR.
+        // Covers the case where handleSigned() could not fetch Idura evidence,
+        // leaving cpr_hash NULL on a newly signed party. Without this, the
+        // dashboard's cpr_hash filter would hide the envelope.
+        $userEmails = SigningParty::where('cpr_hash', $cprHash)->pluck('email')->unique();
+        $orphans = SigningParty::whereIn('email', $userEmails)
+            ->whereNull('cpr_hash')
+            ->get();
+        foreach ($orphans as $party) {
+            $party->cpr = $cpr;
+            $party->save();
+        }
+
         // Set CPR session for dashboard access (regenerate to prevent session fixation)
         session()->regenerate();
         session(['signing_room_cpr' => $cprHash]);

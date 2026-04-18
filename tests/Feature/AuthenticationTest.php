@@ -8,6 +8,7 @@ use Fountainhead\SigningRoom\Models\SigningEnvelope;
 use Fountainhead\SigningRoom\Models\SigningParty;
 use Fountainhead\SigningRoom\Tests\TestCase;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Http;
 
 class AuthenticationTest extends TestCase
 {
@@ -107,5 +108,72 @@ class AuthenticationTest extends TestCase
         $this->get(route('signing-room.portal.landing'))
             ->assertOk()
             ->assertDontSee('<input type="email"', escape: false);
+    }
+
+    // -------------------------------------------------------------------------
+    // MitID callback: orphan backfill
+    // -------------------------------------------------------------------------
+
+    /**
+     * @test
+     *
+     * Regression: after a successful MitID login, any other parties that share
+     * the user's email but have no cpr_hash must be linked to this CPR too.
+     *
+     * Scenario: user signed a new envelope, but handleSigned() could not fetch
+     * CPR evidence from Idura, so cpr_hash stayed NULL on that party. On next
+     * MitID login, login succeeded via an older matching party, but the new
+     * orphan party stayed invisible on the dashboard. Fix: backfill orphans by
+     * email after login.
+     */
+    public function mitid_login_backfills_orphan_parties_with_matching_email(): void
+    {
+        $cpr     = '1234567890';
+        $cprHash = hash('sha256', $cpr);
+        $email   = 'fred@frankston.io';
+
+        // An older envelope the user already signed — their cpr_hash is populated
+        $existingEnvelope = $this->createEnvelope(['title' => 'Old Agreement']);
+        $this->createParty($existingEnvelope, [
+            'email'    => $email,
+            'cpr_hash' => $cprHash,
+            'status'   => SigningPartyStatus::Signed,
+        ]);
+
+        // New envelope: user signed, but Idura evidence fetch failed, so cpr_hash is NULL
+        $orphanEnvelope = $this->createEnvelope(['title' => 'New Agreement']);
+        $orphan = $this->createParty($orphanEnvelope, [
+            'email'    => $email,
+            'cpr_hash' => null,
+            'status'   => SigningPartyStatus::Signed,
+        ]);
+
+        // Build a JWT with the CPR — signature is not validated in callback, only iss/aud
+        $domain   = config('signing-room.criipto_verify.domain');
+        $clientId = config('signing-room.criipto_verify.client_id');
+        $payload  = strtr(base64_encode(json_encode([
+            'iss'                 => 'https://' . $domain,
+            'aud'                 => $clientId,
+            'cprNumberIdentifier' => $cpr,
+        ])), '+/', '-_');
+        $idToken  = 'header.' . $payload . '.signature';
+
+        Http::fake([
+            'https://' . $domain . '/oauth2/token' => Http::response(['id_token' => $idToken]),
+        ]);
+
+        $state = 'test-state';
+
+        $response = $this->withSession(['signing_room_oauth_state' => $state])
+            ->get(route('signing-room.portal.auth.callback', [
+                'code'  => 'test-code',
+                'state' => $state,
+            ]));
+
+        $response->assertRedirect(route('signing-room.portal.dashboard'));
+
+        // The orphan party must now have cpr_hash populated
+        $orphan->refresh();
+        $this->assertSame($cprHash, $orphan->cpr_hash);
     }
 }
