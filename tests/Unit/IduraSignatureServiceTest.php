@@ -161,4 +161,50 @@ class IduraSignatureServiceTest extends TestCase
 
         $this->assertNull($this->service()->getSignatoryEvidence(self::SIGNATORY_ID));
     }
+
+    // -------------------------------------------------------------------------
+    // createOrder — ssn scope for CPR claim
+    // -------------------------------------------------------------------------
+
+    /**
+     * @test
+     *
+     * Criipto Verify only issues the cprNumberIdentifier claim in the signing
+     * JWT when the `ssn` scope is explicitly requested on the evidence
+     * provider. Without it, handleSigned()/getSignatoryEvidence see a JWT
+     * full of MitID metadata but no CPR — and the party stays orphan.
+     */
+    public function create_order_requests_ssn_scope_on_criipto_verify_provider(): void
+    {
+        Http::fake([
+            self::ENDPOINT => Http::response([
+                'data' => [
+                    'createSignatureOrder' => [
+                        'signatureOrder' => [
+                            'id'        => 'order-123',
+                            'status'    => 'OPEN',
+                            'documents' => [],
+                        ],
+                    ],
+                ],
+            ]),
+        ]);
+
+        $this->service()->createOrder(
+            title: 'Test Order',
+            pdfBase64: base64_encode('fake-pdf'),
+            documentTitle: 'Test Doc',
+            webhookUrl: 'https://example.com/webhook',
+            redirectUri: 'https://example.com/redirect',
+        );
+
+        Http::assertSent(function ($request) {
+            $data = $request->data();
+            $criiptoVerify = $data['variables']['input']['evidenceProviders'][0]['criiptoVerify'] ?? null;
+
+            return $criiptoVerify !== null
+                && isset($criiptoVerify['scope'])
+                && str_contains($criiptoVerify['scope'], 'ssn');
+        });
+    }
 }
