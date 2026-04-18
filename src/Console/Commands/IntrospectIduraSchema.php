@@ -76,13 +76,32 @@ class IntrospectIduraSchema extends Command
                 signatureOrder(id: $id) {
                     id
                     status
+                    closedAt
+                    expiresAt
                     documents {
                         id
                         title
                         signatures {
                             __typename
-                            signatory { id }
+                            signatory { id reference status }
+                            ... on JWTSignature {
+                                claims { name value }
+                            }
+                            ... on CompositeSignature {
+                                signatures {
+                                    __typename
+                                    ... on JWTSignature {
+                                        claims { name value }
+                                    }
+                                }
+                            }
                         }
+                    }
+                    signatories {
+                        id
+                        reference
+                        status
+                        statusReason
                     }
                 }
             }
