@@ -41,6 +41,7 @@ class SigningRoomServiceProvider extends ServiceProvider
         if ($this->app->runningInConsole()) {
             $this->commands([
                 \Fountainhead\SigningRoom\Console\Commands\BackfillCprFromIdura::class,
+                \Fountainhead\SigningRoom\Console\Commands\IntrospectIduraSchema::class,
             ]);
 
 
