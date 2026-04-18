@@ -15,5 +15,6 @@ enum SigningEventType: string
     case PartySigned = 'party.signed';
     case PartyRejected = 'party.rejected';
     case PartyError = 'party.error';
+    case PartyCprLinked = 'party.cpr_linked';
     case RoundAdvanced = 'round.advanced';
 }

@@ -115,40 +115,11 @@ class AuthenticationTest extends TestCase
     // -------------------------------------------------------------------------
 
     /**
-     * @test
-     *
-     * Regression: after a successful MitID login, any other parties that share
-     * the user's email but have no cpr_hash must be linked to this CPR too.
-     *
-     * Scenario: user signed a new envelope, but handleSigned() could not fetch
-     * CPR evidence from Idura, so cpr_hash stayed NULL on that party. On next
-     * MitID login, login succeeded via an older matching party, but the new
-     * orphan party stayed invisible on the dashboard. Fix: backfill orphans by
-     * email after login.
+     * Fake the Criipto token endpoint so the callback can decode a JWT with
+     * an arbitrary CPR claim. Returns the state value to replay in the request.
      */
-    public function mitid_login_backfills_orphan_parties_with_matching_email(): void
+    private function fakeCriiptoCallback(string $cpr): string
     {
-        $cpr     = '1234567890';
-        $cprHash = hash('sha256', $cpr);
-        $email   = 'fred@frankston.io';
-
-        // An older envelope the user already signed — their cpr_hash is populated
-        $existingEnvelope = $this->createEnvelope(['title' => 'Old Agreement']);
-        $this->createParty($existingEnvelope, [
-            'email'    => $email,
-            'cpr_hash' => $cprHash,
-            'status'   => SigningPartyStatus::Signed,
-        ]);
-
-        // New envelope: user signed, but Idura evidence fetch failed, so cpr_hash is NULL
-        $orphanEnvelope = $this->createEnvelope(['title' => 'New Agreement']);
-        $orphan = $this->createParty($orphanEnvelope, [
-            'email'    => $email,
-            'cpr_hash' => null,
-            'status'   => SigningPartyStatus::Signed,
-        ]);
-
-        // Build a JWT with the CPR — signature is not validated in callback, only iss/aud
         $domain   = config('signing-room.criipto_verify.domain');
         $clientId = config('signing-room.criipto_verify.client_id');
         $payload  = strtr(base64_encode(json_encode([
@@ -162,7 +133,34 @@ class AuthenticationTest extends TestCase
             'https://' . $domain . '/oauth2/token' => Http::response(['id_token' => $idToken]),
         ]);
 
-        $state = 'test-state';
+        return 'test-state';
+    }
+
+    /** @test */
+    public function mitid_login_backfills_orphan_parties_with_matching_email(): void
+    {
+        // Happy path: user has one confirmed party with cpr_hash populated on
+        // their dedicated email, plus one orphan (Idura evidence fetch failed).
+        // Login should safely backfill the orphan.
+        $cpr     = '1234567890';
+        $cprHash = hash('sha256', $cpr);
+        $email   = 'fred@frankston.io';
+
+        $existing = $this->createEnvelope(['title' => 'Old Agreement']);
+        $this->createParty($existing, [
+            'email'    => $email,
+            'cpr_hash' => $cprHash,
+            'status'   => SigningPartyStatus::Signed,
+        ]);
+
+        $orphanEnvelope = $this->createEnvelope(['title' => 'New Agreement']);
+        $orphan = $this->createParty($orphanEnvelope, [
+            'email'    => $email,
+            'cpr_hash' => null,
+            'status'   => SigningPartyStatus::Signed,
+        ]);
+
+        $state = $this->fakeCriiptoCallback($cpr);
 
         $response = $this->withSession(['signing_room_oauth_state' => $state])
             ->get(route('signing-room.portal.auth.callback', [
@@ -171,9 +169,167 @@ class AuthenticationTest extends TestCase
             ]));
 
         $response->assertRedirect(route('signing-room.portal.dashboard'));
+        $this->assertSame($cprHash, $orphan->refresh()->cpr_hash);
+    }
 
-        // The orphan party must now have cpr_hash populated
-        $orphan->refresh();
-        $this->assertSame($cprHash, $orphan->cpr_hash);
+    /**
+     * @test
+     *
+     * P1 REGRESSION: a shared email with two or more known CPRs must never
+     * cause one user's login to overwrite another user's orphan party.
+     */
+    public function mitid_login_refuses_to_backfill_orphans_on_shared_email(): void
+    {
+        $mine       = '1234567890';
+        $mineHash   = hash('sha256', $mine);
+        $othersHash = hash('sha256', '9999999999');
+        $shared     = 'info@advokatfirma.dk';
+
+        // A confirmed party for ME
+        $mineEnvelope = $this->createEnvelope(['title' => 'My Envelope']);
+        $this->createParty($mineEnvelope, [
+            'email'    => $shared,
+            'cpr_hash' => $mineHash,
+            'status'   => SigningPartyStatus::Signed,
+        ]);
+
+        // Someone else's confirmed party on the same shared mailbox
+        $othersEnvelope = $this->createEnvelope(['title' => 'Colleague Envelope']);
+        $this->createParty($othersEnvelope, [
+            'email'    => $shared,
+            'cpr_hash' => $othersHash,
+            'status'   => SigningPartyStatus::Signed,
+        ]);
+
+        // A colleague's orphan on the same shared mailbox
+        $orphanEnvelope = $this->createEnvelope(['title' => 'Colleague Orphan']);
+        $orphan = $this->createParty($orphanEnvelope, [
+            'email'    => $shared,
+            'cpr_hash' => null,
+            'status'   => SigningPartyStatus::Signed,
+        ]);
+
+        $state = $this->fakeCriiptoCallback($mine);
+
+        $this->withSession(['signing_room_oauth_state' => $state])
+            ->get(route('signing-room.portal.auth.callback', [
+                'code'  => 'test-code',
+                'state' => $state,
+            ]))
+            ->assertRedirect(route('signing-room.portal.dashboard'));
+
+        // The orphan must NOT be linked — shared mailbox ambiguity makes this unsafe
+        $this->assertNull($orphan->refresh()->cpr_hash);
+    }
+
+    /** @test */
+    public function mitid_login_refuses_to_backfill_orphan_with_mismatched_cpr_last_four(): void
+    {
+        $cpr     = '1234567890'; // last 4 = 7890
+        $cprHash = hash('sha256', $cpr);
+        $email   = 'fred@frankston.io';
+
+        $existing = $this->createEnvelope(['title' => 'Old Agreement']);
+        $this->createParty($existing, [
+            'email'    => $email,
+            'cpr_hash' => $cprHash,
+            'status'   => SigningPartyStatus::Signed,
+        ]);
+
+        // Orphan has an explicit cpr_last_four that does NOT match — likely a
+        // different person who happens to share the mailbox but whose last four
+        // was recorded by the envelope creator
+        $orphanEnvelope = $this->createEnvelope(['title' => 'Suspicious Orphan']);
+        $orphan = $this->createParty($orphanEnvelope, [
+            'email'          => $email,
+            'cpr_hash'       => null,
+            'cpr_last_four'  => '0000',
+            'status'         => SigningPartyStatus::Signed,
+        ]);
+
+        $state = $this->fakeCriiptoCallback($cpr);
+
+        $this->withSession(['signing_room_oauth_state' => $state])
+            ->get(route('signing-room.portal.auth.callback', [
+                'code'  => 'test-code',
+                'state' => $state,
+            ]))
+            ->assertRedirect(route('signing-room.portal.dashboard'));
+
+        $this->assertNull($orphan->refresh()->cpr_hash);
+    }
+
+    /** @test */
+    public function mitid_login_backfills_orphan_with_matching_cpr_last_four(): void
+    {
+        $cpr     = '1234567890'; // last 4 = 7890
+        $cprHash = hash('sha256', $cpr);
+        $email   = 'fred@frankston.io';
+
+        $existing = $this->createEnvelope(['title' => 'Old Agreement']);
+        $this->createParty($existing, [
+            'email'    => $email,
+            'cpr_hash' => $cprHash,
+            'status'   => SigningPartyStatus::Signed,
+        ]);
+
+        $orphanEnvelope = $this->createEnvelope(['title' => 'Confirmed Orphan']);
+        $orphan = $this->createParty($orphanEnvelope, [
+            'email'         => $email,
+            'cpr_hash'      => null,
+            'cpr_last_four' => '7890',
+            'status'        => SigningPartyStatus::Signed,
+        ]);
+
+        $state = $this->fakeCriiptoCallback($cpr);
+
+        $this->withSession(['signing_room_oauth_state' => $state])
+            ->get(route('signing-room.portal.auth.callback', [
+                'code'  => 'test-code',
+                'state' => $state,
+            ]))
+            ->assertRedirect(route('signing-room.portal.dashboard'));
+
+        $this->assertSame($cprHash, $orphan->refresh()->cpr_hash);
+    }
+
+    /** @test */
+    public function mitid_login_logs_audit_event_when_backfilling_orphan(): void
+    {
+        $cpr     = '1234567890';
+        $cprHash = hash('sha256', $cpr);
+        $email   = 'fred@frankston.io';
+
+        $existing = $this->createEnvelope(['title' => 'Old Agreement']);
+        $this->createParty($existing, [
+            'email'    => $email,
+            'cpr_hash' => $cprHash,
+            'status'   => SigningPartyStatus::Signed,
+        ]);
+
+        $orphanEnvelope = $this->createEnvelope(['title' => 'New Agreement']);
+        $orphan = $this->createParty($orphanEnvelope, [
+            'email'    => $email,
+            'cpr_hash' => null,
+            'status'   => SigningPartyStatus::Signed,
+        ]);
+
+        $state = $this->fakeCriiptoCallback($cpr);
+
+        $this->withSession(['signing_room_oauth_state' => $state])
+            ->get(route('signing-room.portal.auth.callback', [
+                'code'  => 'test-code',
+                'state' => $state,
+            ]));
+
+        // An audit event must be recorded so we can forensically trace which
+        // login linked which orphan party to which CPR hash
+        $this->assertTrue(
+            $orphanEnvelope->events()
+                ->where('event_type', \Fountainhead\SigningRoom\Enums\SigningEventType::PartyCprLinked->value)
+                ->where('signing_party_id', $orphan->id)
+                ->exists(),
+            'Expected a PartyCprLinked event after email-based backfill',
+        );
     }
 }

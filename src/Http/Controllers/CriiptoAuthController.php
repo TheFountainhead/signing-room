@@ -2,10 +2,12 @@
 
 namespace Fountainhead\SigningRoom\Http\Controllers;
 
+use Fountainhead\SigningRoom\Enums\SigningEventType;
 use Fountainhead\SigningRoom\Models\SigningParty;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 
@@ -146,18 +148,7 @@ class CriiptoAuthController extends Controller
                 ->with('error', 'Vi fandt ingen dokumenter tilknyttet dit MitID.');
         }
 
-        // Backfill any orphan parties that share an email with this CPR.
-        // Covers the case where handleSigned() could not fetch Idura evidence,
-        // leaving cpr_hash NULL on a newly signed party. Without this, the
-        // dashboard's cpr_hash filter would hide the envelope.
-        $userEmails = SigningParty::where('cpr_hash', $cprHash)->pluck('email')->unique();
-        $orphans = SigningParty::whereIn('email', $userEmails)
-            ->whereNull('cpr_hash')
-            ->get();
-        foreach ($orphans as $party) {
-            $party->cpr = $cpr;
-            $party->save();
-        }
+        $this->backfillOrphansByEmail($cprHash, $cpr);
 
         // Set CPR session for dashboard access (regenerate to prevent session fixation)
         session()->regenerate();
@@ -214,6 +205,63 @@ class CriiptoAuthController extends Controller
             return redirect()->route('signing-room.portal.landing')
                 ->with('error', 'Der opstod en fejl. Prøv igen eller kontakt support.');
         }
+    }
+
+    /**
+     * Link orphan parties (cpr_hash = NULL) to this CPR when they share an
+     * email with an already-confirmed party belonging to this user.
+     *
+     * Covers the case where handleSigned() could not fetch Idura evidence,
+     * leaving cpr_hash NULL on a newly signed party. Without this, the
+     * dashboard's cpr_hash filter would hide the envelope from the signer.
+     *
+     * Safety: we only backfill emails where EXACTLY ONE cpr_hash is currently
+     * known globally (and it matches this login), and we reject orphans whose
+     * cpr_last_four is explicitly set to a different suffix. Shared mailboxes
+     * that have served multiple CPRs are excluded to prevent cross-person
+     * identity contamination.
+     */
+    private function backfillOrphansByEmail(string $cprHash, string $cpr): void
+    {
+        // Find emails that unambiguously belong to THIS CPR: the email appears
+        // only once in the known-cpr_hash set, and that one hash matches.
+        $unambiguousEmails = SigningParty::whereNotNull('cpr_hash')
+            ->selectRaw('email, COUNT(DISTINCT cpr_hash) as hash_count, MAX(cpr_hash) as only_hash')
+            ->groupBy('email')
+            ->get()
+            ->filter(fn ($row) => (int) $row->hash_count === 1 && $row->only_hash === $cprHash)
+            ->pluck('email');
+
+        if ($unambiguousEmails->isEmpty()) {
+            return;
+        }
+
+        $lastFour = substr($cpr, -4);
+
+        $orphans = SigningParty::whereIn('email', $unambiguousEmails)
+            ->whereNull('cpr_hash')
+            ->where(function ($q) use ($lastFour) {
+                $q->whereNull('cpr_last_four')
+                    ->orWhere('cpr_last_four', $lastFour);
+            })
+            ->get();
+
+        if ($orphans->isEmpty()) {
+            return;
+        }
+
+        DB::transaction(function () use ($orphans, $cpr) {
+            foreach ($orphans as $party) {
+                $party->cpr = $cpr;
+                $party->save();
+
+                $party->envelope->logEvent(
+                    SigningEventType::PartyCprLinked,
+                    $party,
+                    ['source' => 'mitid_login_email_backfill'],
+                );
+            }
+        });
     }
 
     /**
