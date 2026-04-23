@@ -17,12 +17,12 @@ trait HasBranding
                 ? \App\Models\User::find($envelope->created_by)
                 : null;
 
-            if ($creator) {
+            if ($creator && $creator->email) {
                 $mail->from($creator->email, $branding['company_name'] ?? $creator->name);
             }
-        } elseif ($branding) {
+        } elseif ($branding && $fromAddress = config('mail.from.address')) {
             // Use platform's email address but with customer's company name
-            $mail->from(config('mail.from.address'), $branding['company_name']);
+            $mail->from($fromAddress, $branding['company_name']);
         }
 
         return $mail;
