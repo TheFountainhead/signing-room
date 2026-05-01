@@ -225,4 +225,78 @@ class PostSigningCompleteTest extends TestCase
             .'or never-existed envelope.'
         );
     }
+
+    /**
+     * @test
+     *
+     * Locks the data-integrity invariant flagged by the review: the resolver
+     * must receive the envelope creator's user_id, not the visitor's identity
+     * or some other stand-in. If a future refactor accidentally feeds the
+     * resolver the wrong subject, tenant branding leaks across signers.
+     */
+    public function complete_page_invokes_branding_resolver_with_envelope_creator_id(): void
+    {
+        $envelope = $this->createEnvelope(['created_by' => 12345]);
+
+        $captured = null;
+        config(['signing-room.branding_resolver' => function ($userId) use (&$captured) {
+            $captured = $userId;
+
+            return ['company_name' => 'Test', 'logo_url' => null];
+        }]);
+
+        $this->withSession(['signing_room_active_envelope_uuid' => $envelope->uuid])
+            ->get(route('signing-room.portal.signing-complete'))
+            ->assertOk();
+
+        $this->assertSame(
+            12345,
+            $captured,
+            'Branding-resolver must receive envelope.created_by — not the visitor '
+            .'user_id or any other stand-in. Mis-feeding this argument would leak '
+            .'one tenant\'s branding into another tenant\'s signing flow.'
+        );
+    }
+
+    /**
+     * @test
+     *
+     * Multi-tab + shared-browser bleed prevention: after /complete renders
+     * once, the session UUID must be consumed so a stale subsequent visit
+     * does not inherit the prior signing flow's branding context.
+     *
+     * This locks the security/architecture-review fix: read-then-forget
+     * (`session()->pull(...)`) instead of plain read.
+     */
+    public function complete_page_consumes_session_envelope_uuid_after_render(): void
+    {
+        $envelope = $this->createEnvelope();
+
+        config(['signing-room.branding_resolver' => function ($userId) {
+            return [
+                'company_name' => 'First Tenant',
+                'logo_url'     => 'https://cdn.example.com/first-tenant.svg',
+            ];
+        }]);
+
+        // First visit: branding resolves from the seeded session UUID.
+        $this->withSession(['signing_room_active_envelope_uuid' => $envelope->uuid])
+            ->get(route('signing-room.portal.signing-complete'))
+            ->assertOk()
+            ->assertSee('first-tenant.svg');
+
+        // Second visit, same session, no /sign in between: branding must NOT
+        // bleed through. The session UUID was single-use and is now gone.
+        $response = $this->get(route('signing-room.portal.signing-complete'))
+            ->assertOk();
+
+        $this->assertStringNotContainsString(
+            'first-tenant.svg',
+            $response->getContent(),
+            'After /complete consumes the session envelope UUID, a follow-up '
+            .'visit must render with default branding — otherwise a shared '
+            .'browser leaks one tenant\'s identity into the next visitor\'s '
+            .'experience (security F1+F2 from the multi-agent review).'
+        );
+    }
 }
