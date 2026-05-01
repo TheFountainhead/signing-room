@@ -13,20 +13,47 @@
             <p style="color: var(--ft-dark); margin-bottom: 8px; font-size: 1.125rem; line-height: 1.7;">
                 Din underskrift er registreret.
             </p>
-            <p style="color: var(--ft-grey); margin-bottom: 40px;">
+            <p style="color: var(--ft-grey); margin-bottom: 32px;">
                 Du vil modtage en kopi af det signerede dokument pr. e-mail, når alle parter har underskrevet.
             </p>
 
-            <div style="display: flex; gap: 16px; justify-content: center;">
-                <a href="{{ route('signing-room.portal.dashboard') }}" class="btn-primary">
-                    Mine dokumenter
-                </a>
+            @if($isLoggedIn)
+                {{-- Tier 2: user has a CPR session, dashboard is reachable directly --}}
+                <div style="display: flex; gap: 16px; justify-content: center; flex-wrap: wrap;">
+                    <a href="{{ route('signing-room.portal.dashboard') }}" class="btn-primary">
+                        Mine dokumenter
+                    </a>
+                    @if(Route::has('signing-room.portal.landing'))
+                        <a href="{{ route('signing-room.portal.landing') }}" class="btn-outline">
+                            Til forsiden
+                        </a>
+                    @endif
+                </div>
+            @elseif($hasCriiptoVerify)
+                {{-- Tier 1: token-link signer with no CPR session — MitID login is the
+                     only path to the dashboard. Without this CTA the dashboard link
+                     would silently bounce them back to landing (FHT-1962). --}}
+                <p style="font-weight: 600; color: var(--ft-dark); margin-bottom: 16px; font-size: 1.05rem;">
+                    Log ind for at se din profil
+                </p>
+                <div style="display: flex; gap: 16px; justify-content: center; flex-wrap: wrap;">
+                    <a href="{{ route('signing-room.portal.auth.redirect') }}" class="btn-primary">
+                        Log ind med MitID
+                    </a>
+                    @if(Route::has('signing-room.portal.landing'))
+                        <a href="{{ route('signing-room.portal.landing') }}" class="btn-outline">
+                            Til forsiden
+                        </a>
+                    @endif
+                </div>
+            @else
+                {{-- Tenants without Criipto configured — landing is the only fallback --}}
                 @if(Route::has('signing-room.portal.landing'))
-                    <a href="{{ route('signing-room.portal.landing') }}" class="btn-outline">
+                    <a href="{{ route('signing-room.portal.landing') }}" class="btn-primary">
                         Til forsiden
                     </a>
                 @endif
-            </div>
+            @endif
         </div>
     </div>
 </div>

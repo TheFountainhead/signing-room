@@ -20,6 +20,10 @@ class SignDocument extends Component
     {
         $this->signingParty = $signingParty->load('envelope.parties');
 
+        // Anchor envelope context across the Idura signing roundtrip so the
+        // post-signing /complete page can resolve tenant branding (FHT-1962).
+        session(['signing_room_active_envelope_uuid' => $this->signingParty->envelope->uuid]);
+
         // Mark as viewed on first access (skip if already signed/rejected)
         if (! $this->signingParty->viewed_at
             && $this->signingParty->status !== SigningPartyStatus::Signed
