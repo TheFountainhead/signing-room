@@ -170,7 +170,7 @@
 
     <header class="sr-header">
         <div class="container">
-            <a href="{{ route('signing-room.portal.landing') }}" class="sr-logo">
+            <a href="{{ Route::has('signing-room.portal.landing') ? route('signing-room.portal.landing') : url('/') }}" class="sr-logo">
                 @if($branding && !empty($branding['logo_url']))
                     <img src="{{ $branding['logo_url'] }}" alt="{{ $branding['company_name'] ?? 'Frankston' }}" style="height: 36px;">
                 @else
