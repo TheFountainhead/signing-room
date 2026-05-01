@@ -10,10 +10,13 @@ class SigningComplete extends Component
     public function render()
     {
         // Pull (read-then-forget) so the envelope context is single-use. This
-        // prevents stale branding from leaking into a later /complete render
-        // on a shared browser, and gives multi-tab signers honest semantics:
-        // each /complete page resolves the envelope it just signed, never an
-        // older one. (Security review F1+F2, FHT-1962 follow-up.)
+        // narrows the shared-browser branding-leak window (security review F1+F2)
+        // and matches the convention already used in CriiptoAuthController for
+        // signing_room_oauth_state. NOTE: this is a temporal fix only — the
+        // session UUID is a single global slot, so a concurrent multi-tab
+        // race (tab A on /sign/A, tab B clobbers UUID to B, tab A signs and
+        // resolves B's branding) is NOT solved here; that requires per-envelope
+        // URL-param routing which is tracked as a separate follow-up.
         $envelope = null;
         $envelopeUuid = session()->pull('signing_room_active_envelope_uuid');
 

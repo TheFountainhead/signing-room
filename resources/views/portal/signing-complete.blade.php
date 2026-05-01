@@ -3,6 +3,8 @@
         $landingHref = Route::has('signing-room.portal.landing')
             ? route('signing-room.portal.landing')
             : null;
+
+        $hasAuthRedirect = Route::has('signing-room.portal.auth.redirect');
     @endphp
 
     <div class="fade-up" style="display: flex; align-items: center; justify-content: center; min-height: calc(100vh - 280px); padding: 48px 0;">
@@ -35,12 +37,15 @@
                         </a>
                     @endif
                 </div>
-            @elseif($hasCriiptoVerify && Route::has('signing-room.portal.auth.redirect'))
+            @elseif($hasCriiptoVerify && $hasAuthRedirect)
                 {{-- Tier 1: token-link signer with no CPR session — MitID login is the
                      only path to the dashboard. Without this CTA the dashboard link
                      would silently bounce them back to landing (FHT-1962). The
-                     Route::has guard mirrors the landing-route guard convention,
-                     defending against pattern #111 (tenant URL shadow). --}}
+                     Route::has guard mirrors the landing-route convention; it
+                     defends against route-name absence/override on a tenant (a
+                     custom service-provider could selectively unregister), not
+                     URL-path shadowing per pattern #111 (which `Route::has` cannot
+                     detect). --}}
                 <p style="font-weight: 600; color: var(--ft-dark); margin-bottom: 16px; font-size: 1.05rem;">
                     Log ind for at se din profil
                 </p>
