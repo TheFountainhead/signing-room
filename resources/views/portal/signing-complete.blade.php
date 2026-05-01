@@ -21,9 +21,11 @@
                 <a href="{{ route('signing-room.portal.dashboard') }}" class="btn-primary">
                     Mine dokumenter
                 </a>
-                <a href="{{ route('signing-room.portal.landing') }}" class="btn-outline">
-                    Til forsiden
-                </a>
+                @if(Route::has('signing-room.portal.landing'))
+                    <a href="{{ route('signing-room.portal.landing') }}" class="btn-outline">
+                        Til forsiden
+                    </a>
+                @endif
             </div>
         </div>
     </div>
