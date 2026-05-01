@@ -68,4 +68,41 @@ class PortalLayoutDefensiveRouteTest extends TestCase
             .'(a regression upstream of the layout guard).'
         );
     }
+
+    /**
+     * @test
+     *
+     * FHT-1962 follow-up: the signing-complete page's MitID-login CTA for Tier 1
+     * signers must remain guarded by Route::has() so a tenant that selectively
+     * unregisters or overrides the auth.redirect route name does not crash the
+     * post-signing render. Mirrors the landing-route guard convention.
+     */
+    public function signing_complete_blade_uses_route_has_guard_for_auth_redirect(): void
+    {
+        $blade = file_get_contents(
+            dirname(__DIR__, 2) . '/resources/views/portal/signing-complete.blade.php'
+        );
+
+        $this->assertStringContainsString(
+            "Route::has('signing-room.portal.auth.redirect')",
+            $blade,
+            'signing-complete view must guard the MitID-login CTA with Route::has() '
+            .'on signing-room.portal.auth.redirect — defends against tenants where '
+            .'a custom service-provider unregisters or overrides the route name.'
+        );
+    }
+
+    /** @test */
+    public function auth_redirect_route_is_registered_by_service_provider(): void
+    {
+        // Bilateral positive half — package's own routes/portal.php must register
+        // this route name so the guard above does not silently route everyone to
+        // the landing-only fallback when the package is loaded correctly.
+        $this->assertTrue(
+            Route::has('signing-room.portal.auth.redirect'),
+            'SigningRoomServiceProvider must register signing-room.portal.auth.redirect '
+            .'— if this fails, the package itself has lost the auth.redirect definition '
+            .'(a regression upstream of the blade guard).'
+        );
+    }
 }

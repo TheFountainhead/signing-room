@@ -1,4 +1,12 @@
 <div>
+    @php
+        $landingHref = Route::has('signing-room.portal.landing')
+            ? route('signing-room.portal.landing')
+            : null;
+
+        $hasAuthRedirect = Route::has('signing-room.portal.auth.redirect');
+    @endphp
+
     <div class="fade-up" style="display: flex; align-items: center; justify-content: center; min-height: calc(100vh - 280px); padding: 48px 0;">
         <div class="card" style="max-width: 560px; width: 100%; text-align: center; padding: 64px 48px; border-radius: 12px;">
             <div style="margin-bottom: 24px;">
@@ -13,20 +21,51 @@
             <p style="color: var(--ft-dark); margin-bottom: 8px; font-size: 1.125rem; line-height: 1.7;">
                 Din underskrift er registreret.
             </p>
-            <p style="color: var(--ft-grey); margin-bottom: 40px;">
+            <p style="color: var(--ft-grey); margin-bottom: 32px;">
                 Du vil modtage en kopi af det signerede dokument pr. e-mail, når alle parter har underskrevet.
             </p>
 
-            <div style="display: flex; gap: 16px; justify-content: center;">
-                <a href="{{ route('signing-room.portal.dashboard') }}" class="btn-primary">
-                    Mine dokumenter
-                </a>
-                @if(Route::has('signing-room.portal.landing'))
-                    <a href="{{ route('signing-room.portal.landing') }}" class="btn-outline">
-                        Til forsiden
+            @if($isLoggedIn)
+                {{-- Tier 2: user has a CPR session, dashboard is reachable directly --}}
+                <div style="display: flex; gap: 16px; justify-content: center; flex-wrap: wrap;">
+                    <a href="{{ route('signing-room.portal.dashboard') }}" class="btn-primary">
+                        Mine dokumenter
                     </a>
-                @endif
-            </div>
+                    @if($landingHref)
+                        <a href="{{ $landingHref }}" class="btn-outline">
+                            Til forsiden
+                        </a>
+                    @endif
+                </div>
+            @elseif($hasCriiptoVerify && $hasAuthRedirect)
+                {{-- Tier 1: token-link signer with no CPR session — MitID login is the
+                     only path to the dashboard. Without this CTA the dashboard link
+                     would silently bounce them back to landing (FHT-1962). The
+                     Route::has guard mirrors the landing-route convention; it
+                     defends against route-name absence/override on a tenant (a
+                     custom service-provider could selectively unregister), not
+                     URL-path shadowing per pattern #111 (which `Route::has` cannot
+                     detect). --}}
+                <p style="font-weight: 600; color: var(--ft-dark); margin-bottom: 16px; font-size: 1.05rem;">
+                    Log ind for at se din profil
+                </p>
+                <div style="display: flex; gap: 16px; justify-content: center; flex-wrap: wrap;">
+                    <a href="{{ route('signing-room.portal.auth.redirect') }}" class="btn-primary">
+                        Log ind med MitID
+                    </a>
+                    @if($landingHref)
+                        <a href="{{ $landingHref }}" class="btn-outline">
+                            Til forsiden
+                        </a>
+                    @endif
+                </div>
+            @elseif($landingHref)
+                {{-- Tenants without Criipto configured (or auth.redirect shadowed)
+                     — landing is the only fallback --}}
+                <a href="{{ $landingHref }}" class="btn-primary">
+                    Til forsiden
+                </a>
+            @endif
         </div>
     </div>
 </div>
