@@ -6,6 +6,13 @@ return [
         'client_id' => env('IDURA_SIGNATURES_CLIENT_ID'),
         'client_secret' => env('IDURA_SIGNATURES_CLIENT_SECRET'),
         'webhook_secret' => env('IDURA_WEBHOOK_SECRET'),
+
+        // Two-phase rollout for webhook HMAC enforcement. Orders created before
+        // the secret was registered never carry X-Criipto-Signature, so phase 1
+        // (false) only logs invalid signatures; flip to phase 2 (true) to
+        // abort(403) once those in-flight orders have expired.
+        'webhook_enforce' => env('IDURA_WEBHOOK_ENFORCE', false),
+
         'acr_values' => ['urn:grn:authn:dk:mitid:low'],
         'environment' => env('IDURA_ENVIRONMENT', 'TEST'),
     ],
