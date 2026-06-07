@@ -4,12 +4,15 @@ namespace Fountainhead\SigningRoom\Notifications;
 
 use Fountainhead\SigningRoom\Models\SigningEnvelope;
 use Fountainhead\SigningRoom\Notifications\Concerns\HasBranding;
+use Illuminate\Bus\Queueable;
+use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Notifications\Messages\MailMessage;
 use Illuminate\Notifications\Notification;
+use Illuminate\Queue\SerializesModels;
 
-class EnvelopeCompletedNotification extends Notification
+class EnvelopeCompletedNotification extends Notification implements ShouldQueue
 {
-    use HasBranding;
+    use HasBranding, Queueable, SerializesModels;
 
     public function __construct(
         public SigningEnvelope $envelope,
