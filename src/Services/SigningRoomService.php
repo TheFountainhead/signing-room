@@ -204,12 +204,10 @@ class SigningRoomService
             ->get();
 
         foreach ($parties as $index => $party) {
-            // Resend rate limit: 2 requests/sec — add delay between emails
-            if ($index > 0) {
-                usleep(600_000); // 600ms
-            }
-
-            $party->notify(new DocumentReadyNotification($envelope, $party));
+            // Resend rate limit: 2 requests/sec — stagger queued sends 1s apart
+            $party->notify(
+                (new DocumentReadyNotification($envelope, $party))->delay($index),
+            );
 
             $party->update([
                 'status' => SigningPartyStatus::Notified,
