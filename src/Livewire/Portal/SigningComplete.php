@@ -2,7 +2,9 @@
 
 namespace Fountainhead\SigningRoom\Livewire\Portal;
 
+use Fountainhead\SigningRoom\Enums\SigningPartyStatus;
 use Fountainhead\SigningRoom\Models\SigningEnvelope;
+use Fountainhead\SigningRoom\Models\SigningParty;
 use Livewire\Component;
 
 class SigningComplete extends Component
@@ -24,10 +26,19 @@ class SigningComplete extends Component
             $envelope = SigningEnvelope::where('uuid', $envelopeUuid)->first();
         }
 
+        // Same single-use convention for the party: resolve the actual outcome
+        // from our own DB (updated synchronously on in-app reject, via webhook
+        // for Idura-side rejections) instead of trusting anything in the URL.
+        // If the webhook hasn't landed yet, this falls back to the signed copy
+        // — same as the pre-existing behavior.
+        $partyUuid = session()->pull('signing_room_active_party_uuid');
+        $party = $partyUuid ? SigningParty::where('uuid', $partyUuid)->first() : null;
+        $rejected = $party?->status === SigningPartyStatus::Rejected;
+
         $hasCriiptoVerify = (bool) config('signing-room.criipto_verify.client_id');
         $isLoggedIn = (bool) session('signing_room_cpr');
 
-        $layoutData = ['title' => 'Underskrift fuldført'];
+        $layoutData = ['title' => $rejected ? 'Dokument afvist' : 'Underskrift fuldført'];
         if ($envelope) {
             $layoutData['envelope'] = $envelope;
         }
@@ -35,6 +46,7 @@ class SigningComplete extends Component
         return view('signing-room::portal.signing-complete', [
             'hasCriiptoVerify' => $hasCriiptoVerify,
             'isLoggedIn'       => $isLoggedIn,
+            'rejected'         => $rejected,
         ])->layout('signing-room::layouts.portal', $layoutData);
     }
 }

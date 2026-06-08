@@ -21,8 +21,12 @@ class SignDocument extends Component
         $this->signingParty = $signingParty->load('envelope.parties');
 
         // Anchor envelope context across the Idura signing roundtrip so the
-        // post-signing /complete page can resolve tenant branding (FHT-1962).
-        session(['signing_room_active_envelope_uuid' => $this->signingParty->envelope->uuid]);
+        // post-signing /complete page can resolve tenant branding (FHT-1962)
+        // and the party's actual outcome (signed vs. rejected).
+        session([
+            'signing_room_active_envelope_uuid' => $this->signingParty->envelope->uuid,
+            'signing_room_active_party_uuid' => $this->signingParty->uuid,
+        ]);
 
         // Mark as viewed on first access (skip if already signed/rejected)
         if (! $this->signingParty->viewed_at
@@ -49,10 +53,9 @@ class SignDocument extends Component
         $service = app(SigningRoomService::class);
         $service->handleRejected($this->signingParty, $this->rejectionReason);
 
-        $this->showRejectModal = false;
-
-        session()->flash('message', 'Du har afvist dokumentet.');
-        $this->signingParty->refresh();
+        // Land on the outcome-aware /complete page instead of re-rendering
+        // this page — rejecting used to dead-end here with no way onward.
+        $this->redirect(route('signing-room.portal.signing-complete'));
     }
 
     public function render()
