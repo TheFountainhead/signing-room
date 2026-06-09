@@ -66,6 +66,19 @@ GRAPHQL;
             $uiInput['logo'] = ['src' => $logo];
         }
 
+        $webhookInput = [
+            'url' => $webhookUrl,
+            'validateConnectivity' => false,
+        ];
+
+        // Registering a secret makes Criipto sign every webhook invocation for
+        // this order with X-Criipto-Signature. The secret is a base64 Blob —
+        // sent verbatim, not decoded (see IduraWebhookController::validateSignature).
+        $secret = config('signing-room.idura.webhook_secret');
+        if ($secret) {
+            $webhookInput['secret'] = $secret;
+        }
+
         $variables = [
             'input' => [
                 'title' => $title,
@@ -91,10 +104,7 @@ GRAPHQL;
                         ],
                     ],
                 ],
-                'webhook' => [
-                    'url' => $webhookUrl,
-                    'validateConnectivity' => false,
-                ],
+                'webhook' => $webhookInput,
                 'ui' => $uiInput,
             ],
         ];

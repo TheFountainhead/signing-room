@@ -31,6 +31,24 @@ class IduraSignatureServiceTest extends TestCase
         return new IduraSignatureService;
     }
 
+    /** Fake a successful createSignatureOrder response. */
+    private function fakeCreateOrderResponse(): void
+    {
+        Http::fake([
+            self::ENDPOINT => Http::response([
+                'data' => [
+                    'createSignatureOrder' => [
+                        'signatureOrder' => [
+                            'id'        => 'order-123',
+                            'status'    => 'OPEN',
+                            'documents' => [],
+                        ],
+                    ],
+                ],
+            ]),
+        ]);
+    }
+
     /** Build a GraphQL response with a given signatures list on a single document. */
     private function fakeSignatureResponse(array $signatures): void
     {
@@ -176,19 +194,7 @@ class IduraSignatureServiceTest extends TestCase
      */
     public function create_order_requests_ssn_scope_on_criipto_verify_provider(): void
     {
-        Http::fake([
-            self::ENDPOINT => Http::response([
-                'data' => [
-                    'createSignatureOrder' => [
-                        'signatureOrder' => [
-                            'id'        => 'order-123',
-                            'status'    => 'OPEN',
-                            'documents' => [],
-                        ],
-                    ],
-                ],
-            ]),
-        ]);
+        $this->fakeCreateOrderResponse();
 
         $this->service()->createOrder(
             title: 'Test Order',
@@ -205,6 +211,68 @@ class IduraSignatureServiceTest extends TestCase
             return $criiptoVerify !== null
                 && isset($criiptoVerify['scope'])
                 && str_contains($criiptoVerify['scope'], 'ssn');
+        });
+    }
+
+    /**
+     * @test
+     *
+     * The whole webhook-HMAC path is dead unless Criipto is told to sign:
+     * the `secret` must be registered on the order's webhook input. Without
+     * it, no X-Criipto-Signature header is ever sent. The secret is a base64
+     * Blob and must be passed verbatim (the controller decodes it for the
+     * HMAC key).
+     */
+    public function create_order_registers_webhook_secret_when_configured(): void
+    {
+        $secret = base64_encode(random_bytes(32)); // 256-bit Blob
+
+        config(['signing-room.idura.webhook_secret' => $secret]);
+
+        $this->fakeCreateOrderResponse();
+
+        $this->service()->createOrder(
+            title: 'Test Order',
+            pdfBase64: base64_encode('fake-pdf'),
+            documentTitle: 'Test Doc',
+            webhookUrl: 'https://example.com/webhook',
+            redirectUri: 'https://example.com/redirect',
+        );
+
+        Http::assertSent(function ($request) use ($secret) {
+            $webhook = $request->data()['variables']['input']['webhook'] ?? [];
+
+            return ($webhook['secret'] ?? null) === $secret
+                && ($webhook['url'] ?? null) === 'https://example.com/webhook';
+        });
+    }
+
+    /**
+     * @test
+     *
+     * Bilateral negative half: when no secret is configured, the order must
+     * not carry a `secret` key — sending an empty/null secret would make
+     * Criipto reject the mutation or sign with an unexpected key.
+     */
+    public function create_order_omits_webhook_secret_when_not_configured(): void
+    {
+        config(['signing-room.idura.webhook_secret' => null]);
+
+        $this->fakeCreateOrderResponse();
+
+        $this->service()->createOrder(
+            title: 'Test Order',
+            pdfBase64: base64_encode('fake-pdf'),
+            documentTitle: 'Test Doc',
+            webhookUrl: 'https://example.com/webhook',
+            redirectUri: 'https://example.com/redirect',
+        );
+
+        Http::assertSent(function ($request) {
+            $webhook = $request->data()['variables']['input']['webhook'] ?? [];
+
+            return ! array_key_exists('secret', $webhook)
+                && ($webhook['url'] ?? null) === 'https://example.com/webhook';
         });
     }
 }

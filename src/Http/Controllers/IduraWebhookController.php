@@ -11,6 +11,7 @@ use Fountainhead\SigningRoom\Services\SigningRoomService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
+use Illuminate\Support\Facades\Log;
 
 class IduraWebhookController extends Controller
 {
@@ -46,14 +47,39 @@ class IduraWebhookController extends Controller
     private function validateSignature(Request $request): void
     {
         $secret = config('signing-room.idura.webhook_secret');
+
         if (! $secret) {
+            // Fail closed in production: a missing secret means the webhook is
+            // effectively unauthenticated, which must be a loud misconfiguration.
+            if (app()->isProduction()) {
+                abort(500, 'Signing-room webhook secret is not configured');
+            }
+
+            Log::warning('Signing-room webhook secret is not configured; skipping signature validation (non-production).');
+
             return;
         }
 
         $signature = $request->header('X-Criipto-Signature');
-        $computed = base64_encode(hash_hmac('sha256', $request->getContent(), $secret, true));
 
-        abort_unless($signature && hash_equals($computed, $signature), 403, 'Invalid webhook signature');
+        // The secret is a base64 Blob; the HMAC key is its decoded bytes.
+        $computed = base64_encode(hash_hmac('sha256', $request->getContent(), base64_decode($secret), true));
+
+        if ($signature && hash_equals($computed, $signature)) {
+            return;
+        }
+
+        // Orders created before the secret was registered never carry the
+        // header. Until those have drained, enforce=false keeps them flowing
+        // while still surfacing the gap (Log::error → Flare).
+        if (config('signing-room.idura.webhook_enforce')) {
+            abort(403, 'Invalid webhook signature');
+        }
+
+        Log::error('Signing-room webhook signature missing or invalid (enforcement disabled).', [
+            'signatureOrderId' => $request->input('signatureOrderId'),
+            'hasSignatureHeader' => $signature !== null,
+        ]);
     }
 
     private function handleError(SigningEnvelope $envelope, ?SigningParty $party, array $data): void
