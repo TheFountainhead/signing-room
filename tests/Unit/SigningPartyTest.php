@@ -2,6 +2,8 @@
 
 namespace Fountainhead\SigningRoom\Tests\Unit;
 
+use PHPUnit\Framework\Attributes\Test;
+
 use Fountainhead\SigningRoom\Enums\EnvelopeStatus;
 use Fountainhead\SigningRoom\Enums\SigningPartyStatus;
 use Fountainhead\SigningRoom\Models\SigningEnvelope;
@@ -36,7 +38,7 @@ class SigningPartyTest extends TestCase
     // CPR mutator
     // -------------------------------------------------------------------------
 
-    /** @test */
+    #[Test]
     public function cpr_mutator_sets_both_encrypted_and_hash(): void
     {
         $party = $this->createEnvelopeAndParty();
@@ -59,7 +61,7 @@ class SigningPartyTest extends TestCase
     // signingUrl()
     // -------------------------------------------------------------------------
 
-    /** @test */
+    #[Test]
     public function signing_url_contains_token_query_parameter(): void
     {
         $party = $this->createEnvelopeAndParty();

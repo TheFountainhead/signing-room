@@ -2,6 +2,8 @@
 
 namespace Fountainhead\SigningRoom\Tests\Feature;
 
+use PHPUnit\Framework\Attributes\Test;
+
 use Fountainhead\SigningRoom\Enums\EnvelopeStatus;
 use Fountainhead\SigningRoom\Enums\SigningPartyStatus;
 use Fountainhead\SigningRoom\Models\SigningEnvelope;
@@ -55,7 +57,7 @@ class PostSigningCompleteTest extends TestCase
     // Tier 1 (email-token signer, no CPR session): MitID login CTA
     // -------------------------------------------------------------------------
 
-    /** @test */
+    #[Test]
     public function tier_1_user_sees_mitid_login_cta_on_complete_page(): void
     {
         $this->get(route('signing-room.portal.signing-complete'))
@@ -65,13 +67,12 @@ class PostSigningCompleteTest extends TestCase
     }
 
     /**
-     * @test
-     *
      * Bilateral negative half — the dashboard link must NOT appear for Tier 1
      * users, because /dashboard bounces them back to /landing without a CPR
      * session, looping them back to where they started. Showing the link is
      * exactly the trap that produced FHT-1962.
      */
+    #[Test]
     public function tier_1_user_does_not_see_dashboard_link_on_complete_page(): void
     {
         $response = $this->get(route('signing-room.portal.signing-complete'))
@@ -89,7 +90,7 @@ class PostSigningCompleteTest extends TestCase
     // Tier 2 (MitID-logged-in): direct dashboard CTA
     // -------------------------------------------------------------------------
 
-    /** @test */
+    #[Test]
     public function tier_2_user_sees_dashboard_link_on_complete_page(): void
     {
         $cprHash = hash('sha256', '1234567890');
@@ -102,12 +103,11 @@ class PostSigningCompleteTest extends TestCase
     }
 
     /**
-     * @test
-     *
      * Bilateral negative half — Tier 2 users (already logged in) should not
      * be told to "Log ind med MitID" again; that would be a UX regression
      * for the logged-in path.
      */
+    #[Test]
     public function tier_2_user_does_not_see_redundant_mitid_login_cta(): void
     {
         $cprHash = hash('sha256', '1234567890');
@@ -129,14 +129,13 @@ class PostSigningCompleteTest extends TestCase
     // -------------------------------------------------------------------------
 
     /**
-     * @test
-     *
      * When SignDocument loads, it stores the envelope UUID in session so the
      * branding-resolver can run on /complete after the Idura roundtrip. Without
      * this anchor, /complete falls back to default Frankston branding even
      * for tenants with custom branding (Peter saw the Frankston logo instead
      * of Gesda's).
      */
+    #[Test]
     public function sign_document_mount_stores_envelope_uuid_in_session(): void
     {
         $envelope = $this->createEnvelope();
@@ -153,7 +152,7 @@ class PostSigningCompleteTest extends TestCase
         );
     }
 
-    /** @test */
+    #[Test]
     public function complete_page_resolves_envelope_branding_from_session(): void
     {
         $envelope = $this->createEnvelope(['title' => 'Aftale med Gesda Capital']);
@@ -178,13 +177,12 @@ class PostSigningCompleteTest extends TestCase
     }
 
     /**
-     * @test
-     *
      * Bilateral negative half — when the session has no envelope UUID (e.g.
      * a stale browser, or a Tier 2 user landing on /complete without ever
      * visiting /sign), the page must still render with default branding
      * rather than crash trying to look up a missing envelope.
      */
+    #[Test]
     public function complete_page_falls_back_to_default_branding_without_session_uuid(): void
     {
         config(['signing-room.branding_resolver' => function ($userId) {
@@ -206,12 +204,11 @@ class PostSigningCompleteTest extends TestCase
     }
 
     /**
-     * @test
-     *
      * Bilateral negative half — even with a session UUID set, if the envelope
      * was deleted or never existed, /complete must not crash; it must fall
      * back gracefully to default branding.
      */
+    #[Test]
     public function complete_page_falls_back_to_default_branding_when_envelope_missing(): void
     {
         $response = $this->withSession(['signing_room_active_envelope_uuid' => 'nonexistent-uuid-12345'])
@@ -227,13 +224,12 @@ class PostSigningCompleteTest extends TestCase
     }
 
     /**
-     * @test
-     *
      * Locks the data-integrity invariant flagged by the review: the resolver
      * must receive the envelope creator's user_id, not the visitor's identity
      * or some other stand-in. If a future refactor accidentally feeds the
      * resolver the wrong subject, tenant branding leaks across signers.
      */
+    #[Test]
     public function complete_page_invokes_branding_resolver_with_envelope_creator_id(): void
     {
         $envelope = $this->createEnvelope(['created_by' => 12345]);
@@ -259,8 +255,6 @@ class PostSigningCompleteTest extends TestCase
     }
 
     /**
-     * @test
-     *
      * Multi-tab + shared-browser bleed prevention: after /complete renders
      * once, the session UUID must be consumed so a stale subsequent visit
      * does not inherit the prior signing flow's branding context.
@@ -268,6 +262,7 @@ class PostSigningCompleteTest extends TestCase
      * This locks the security/architecture-review fix: read-then-forget
      * (`session()->pull(...)`) instead of plain read.
      */
+    #[Test]
     public function complete_page_consumes_session_envelope_uuid_after_render(): void
     {
         $envelope = $this->createEnvelope();
