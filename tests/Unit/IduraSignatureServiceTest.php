@@ -2,6 +2,8 @@
 
 namespace Fountainhead\SigningRoom\Tests\Unit;
 
+use PHPUnit\Framework\Attributes\Test;
+
 use Fountainhead\SigningRoom\Services\IduraSignatureService;
 use Fountainhead\SigningRoom\Tests\TestCase;
 use Illuminate\Support\Facades\Http;
@@ -70,7 +72,7 @@ class IduraSignatureServiceTest extends TestCase
         ]);
     }
 
-    /** @test */
+    #[Test]
     public function returns_cpr_from_direct_jwt_signature(): void
     {
         $this->fakeSignatureResponse([
@@ -87,7 +89,7 @@ class IduraSignatureServiceTest extends TestCase
         $this->assertSame('1234567890', $this->service()->getSignatoryEvidence(self::SIGNATORY_ID));
     }
 
-    /** @test */
+    #[Test]
     public function returns_cpr_from_nested_composite_signature(): void
     {
         $this->fakeSignatureResponse([
@@ -111,7 +113,7 @@ class IduraSignatureServiceTest extends TestCase
         $this->assertSame('9876543210', $this->service()->getSignatoryEvidence(self::SIGNATORY_ID));
     }
 
-    /** @test */
+    #[Test]
     public function returns_null_when_only_drawable_signature_present(): void
     {
         $this->fakeSignatureResponse([
@@ -124,7 +126,7 @@ class IduraSignatureServiceTest extends TestCase
         $this->assertNull($this->service()->getSignatoryEvidence(self::SIGNATORY_ID));
     }
 
-    /** @test */
+    #[Test]
     public function ignores_signatures_belonging_to_other_signatories(): void
     {
         // The requested signatory has no JWT signature; a *different* signatory
@@ -146,7 +148,7 @@ class IduraSignatureServiceTest extends TestCase
         $this->assertNull($this->service()->getSignatoryEvidence(self::SIGNATORY_ID));
     }
 
-    /** @test */
+    #[Test]
     public function returns_null_when_no_signatures_exist(): void
     {
         $this->fakeSignatureResponse([]);
@@ -154,7 +156,7 @@ class IduraSignatureServiceTest extends TestCase
         $this->assertNull($this->service()->getSignatoryEvidence(self::SIGNATORY_ID));
     }
 
-    /** @test */
+    #[Test]
     public function returns_null_and_swallows_graphql_errors(): void
     {
         Http::fake([
@@ -168,7 +170,7 @@ class IduraSignatureServiceTest extends TestCase
         $this->assertNull($this->service()->getSignatoryEvidence(self::SIGNATORY_ID));
     }
 
-    /** @test */
+    #[Test]
     public function returns_null_when_signatory_not_found(): void
     {
         Http::fake([
@@ -185,13 +187,12 @@ class IduraSignatureServiceTest extends TestCase
     // -------------------------------------------------------------------------
 
     /**
-     * @test
-     *
      * Criipto Verify only issues the cprNumberIdentifier claim in the signing
      * JWT when the `ssn` scope is explicitly requested on the evidence
      * provider. Without it, handleSigned()/getSignatoryEvidence see a JWT
      * full of MitID metadata but no CPR — and the party stays orphan.
      */
+    #[Test]
     public function create_order_requests_ssn_scope_on_criipto_verify_provider(): void
     {
         $this->fakeCreateOrderResponse();
@@ -215,14 +216,13 @@ class IduraSignatureServiceTest extends TestCase
     }
 
     /**
-     * @test
-     *
      * The whole webhook-HMAC path is dead unless Criipto is told to sign:
      * the `secret` must be registered on the order's webhook input. Without
      * it, no X-Criipto-Signature header is ever sent. The secret is a base64
      * Blob and must be passed verbatim (the controller decodes it for the
      * HMAC key).
      */
+    #[Test]
     public function create_order_registers_webhook_secret_when_configured(): void
     {
         $secret = base64_encode(random_bytes(32)); // 256-bit Blob
@@ -248,12 +248,11 @@ class IduraSignatureServiceTest extends TestCase
     }
 
     /**
-     * @test
-     *
      * Bilateral negative half: when no secret is configured, the order must
      * not carry a `secret` key — sending an empty/null secret would make
      * Criipto reject the mutation or sign with an unexpected key.
      */
+    #[Test]
     public function create_order_omits_webhook_secret_when_not_configured(): void
     {
         config(['signing-room.idura.webhook_secret' => null]);
