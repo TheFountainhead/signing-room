@@ -11,7 +11,7 @@
         "illuminate/routing": "^12.0|^13.0",
         "illuminate/console": "^12.0|^13.0",
         "illuminate/notifications": "^12.0|^13.0",
-        "livewire/livewire": "^3.0|^4.0"
+        "livewire/livewire": "^3.0"
     },
     "autoload": {
         "psr-4": {
