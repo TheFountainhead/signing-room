@@ -4,6 +4,7 @@ namespace Fountainhead\SigningRoom\Tests\Feature;
 
 use Fountainhead\SigningRoom\Tests\TestCase;
 use Illuminate\Support\Facades\Route;
+use PHPUnit\Framework\Attributes\Test;
 
 /**
  * Regression test for the Gesda 2026-04-30 incident: tenant deploy missing
@@ -16,7 +17,7 @@ use Illuminate\Support\Facades\Route;
  */
 class PortalLayoutDefensiveRouteTest extends TestCase
 {
-    /** @test */
+    #[Test]
     public function portal_layout_blade_uses_route_has_guard_for_landing(): void
     {
         $blade = file_get_contents(
@@ -39,7 +40,7 @@ class PortalLayoutDefensiveRouteTest extends TestCase
         );
     }
 
-    /** @test */
+    #[Test]
     public function signing_complete_blade_uses_route_has_guard_for_landing(): void
     {
         $blade = file_get_contents(
@@ -53,7 +54,7 @@ class PortalLayoutDefensiveRouteTest extends TestCase
         );
     }
 
-    /** @test */
+    #[Test]
     public function landing_route_is_registered_by_service_provider(): void
     {
         // Bilateral positive half: in environments where the package is loaded
@@ -70,13 +71,12 @@ class PortalLayoutDefensiveRouteTest extends TestCase
     }
 
     /**
-     * @test
-     *
      * FHT-1962 follow-up: the signing-complete page's MitID-login CTA for Tier 1
      * signers must remain guarded by Route::has() so a tenant that selectively
      * unregisters or overrides the auth.redirect route name does not crash the
      * post-signing render. Mirrors the landing-route guard convention.
      */
+    #[Test]
     public function signing_complete_blade_uses_route_has_guard_for_auth_redirect(): void
     {
         $blade = file_get_contents(
@@ -92,7 +92,7 @@ class PortalLayoutDefensiveRouteTest extends TestCase
         );
     }
 
-    /** @test */
+    #[Test]
     public function auth_redirect_route_is_registered_by_service_provider(): void
     {
         // Bilateral positive half — package's own routes/portal.php must register

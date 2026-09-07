@@ -16,6 +16,7 @@ use Fountainhead\SigningRoom\Tests\TestCase;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Notification;
+use PHPUnit\Framework\Attributes\Test;
 
 /**
  * Kristian reported (jun 2026) that sending envelopes felt slow. Root cause:
@@ -59,7 +60,7 @@ class QueuedNotificationsTest extends TestCase
         ], $attributes));
     }
 
-    /** @test */
+    #[Test]
     public function all_notifications_are_queued(): void
     {
         $envelope = $this->createEnvelope();
@@ -71,7 +72,7 @@ class QueuedNotificationsTest extends TestCase
         $this->assertInstanceOf(ShouldQueue::class, new SigningReminderNotification($envelope));
     }
 
-    /** @test */
+    #[Test]
     public function notifications_use_the_default_queue(): void
     {
         $envelope = $this->createEnvelope();
@@ -82,7 +83,7 @@ class QueuedNotificationsTest extends TestCase
         $this->assertNull((new DocumentReadyNotification($envelope, $party))->queue);
     }
 
-    /** @test */
+    #[Test]
     public function round_notifications_are_staggered_to_respect_resend_rate_limit(): void
     {
         Notification::fake();
@@ -99,7 +100,7 @@ class QueuedNotificationsTest extends TestCase
         Notification::assertSentTo($third, DocumentReadyNotification::class, fn ($notification) => $notification->delay === 2);
     }
 
-    /** @test */
+    #[Test]
     public function round_notification_still_updates_party_status_immediately(): void
     {
         Notification::fake();
@@ -114,7 +115,7 @@ class QueuedNotificationsTest extends TestCase
         $this->assertNotNull($party->notified_at);
     }
 
-    /** @test */
+    #[Test]
     public function viewer_parties_are_not_notified_in_rounds(): void
     {
         Notification::fake();

@@ -10,6 +10,7 @@ use Fountainhead\SigningRoom\Models\SigningParty;
 use Fountainhead\SigningRoom\Tests\TestCase;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Livewire\Livewire;
+use PHPUnit\Framework\Attributes\Test;
 
 /**
  * Kristian reported (jun 2026): "da jeg afviste kom jeg ikke tilbage" — the
@@ -48,7 +49,7 @@ class RejectionFlowTest extends TestCase
         ], $attributes));
     }
 
-    /** @test */
+    #[Test]
     public function rejecting_in_app_redirects_to_the_outcome_page(): void
     {
         $envelope = $this->createEnvelope();
@@ -64,7 +65,7 @@ class RejectionFlowTest extends TestCase
         $this->assertEquals('Beløbet er forkert', $party->rejection_reason);
     }
 
-    /** @test */
+    #[Test]
     public function sign_page_anchors_party_uuid_in_session(): void
     {
         $envelope = $this->createEnvelope();
@@ -75,7 +76,7 @@ class RejectionFlowTest extends TestCase
             ->assertSessionHas('signing_room_active_party_uuid', $party->uuid);
     }
 
-    /** @test */
+    #[Test]
     public function complete_page_shows_rejection_outcome_for_rejected_party(): void
     {
         $envelope = $this->createEnvelope();
@@ -91,7 +92,7 @@ class RejectionFlowTest extends TestCase
             ->assertDontSee('Tak for din underskrift');
     }
 
-    /** @test */
+    #[Test]
     public function complete_page_still_offers_a_path_onward_after_rejection(): void
     {
         $envelope = $this->createEnvelope();
@@ -107,7 +108,7 @@ class RejectionFlowTest extends TestCase
             ->assertSee('Log ind med MitID');
     }
 
-    /** @test */
+    #[Test]
     public function complete_page_defaults_to_signed_copy_without_party_session(): void
     {
         $this->get(route('signing-room.portal.signing-complete'))
@@ -116,7 +117,7 @@ class RejectionFlowTest extends TestCase
             ->assertDontSee('Dokument afvist');
     }
 
-    /** @test */
+    #[Test]
     public function complete_page_shows_signed_copy_for_signed_party(): void
     {
         $envelope = $this->createEnvelope();
@@ -131,7 +132,7 @@ class RejectionFlowTest extends TestCase
             ->assertDontSee('Dokument afvist');
     }
 
-    /** @test */
+    #[Test]
     public function party_session_key_is_single_use(): void
     {
         $envelope = $this->createEnvelope();

@@ -7,6 +7,7 @@ use Fountainhead\SigningRoom\Models\SigningEnvelope;
 use Fountainhead\SigningRoom\Tests\TestCase;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Log;
+use PHPUnit\Framework\Attributes\Test;
 
 /**
  * FHT: The Idura/Criipto webhook endpoint mutates signing state (marks parties
@@ -92,7 +93,7 @@ class IduraWebhookSignatureTest extends TestCase
         return $this->postJson(route('signing-room.webhook'), $payload, $headers);
     }
 
-    /** @test */
+    #[Test]
     public function valid_signature_is_accepted_and_processed(): void
     {
         $envelope = $this->createSentEnvelope();
@@ -109,7 +110,7 @@ class IduraWebhookSignatureTest extends TestCase
         );
     }
 
-    /** @test */
+    #[Test]
     public function wrong_signature_with_enforcement_is_rejected_403_without_state_change(): void
     {
         config(['signing-room.idura.webhook_enforce' => true]);
@@ -127,7 +128,7 @@ class IduraWebhookSignatureTest extends TestCase
         );
     }
 
-    /** @test */
+    #[Test]
     public function missing_signature_with_enforcement_is_rejected_403_without_state_change(): void
     {
         config(['signing-room.idura.webhook_enforce' => true]);
@@ -144,7 +145,7 @@ class IduraWebhookSignatureTest extends TestCase
         );
     }
 
-    /** @test */
+    #[Test]
     public function wrong_signature_without_enforcement_is_processed_and_logged(): void
     {
         Log::spy();
@@ -166,7 +167,7 @@ class IduraWebhookSignatureTest extends TestCase
             ->once();
     }
 
-    /** @test */
+    #[Test]
     public function missing_signature_without_enforcement_is_processed_and_logged(): void
     {
         Log::spy();
@@ -186,7 +187,7 @@ class IduraWebhookSignatureTest extends TestCase
             ->once();
     }
 
-    /** @test */
+    #[Test]
     public function missing_secret_in_production_aborts_500(): void
     {
         config(['signing-room.idura.webhook_secret' => null]);
@@ -198,7 +199,7 @@ class IduraWebhookSignatureTest extends TestCase
             ->assertStatus(500);
     }
 
-    /** @test */
+    #[Test]
     public function missing_secret_outside_production_is_tolerated(): void
     {
         config(['signing-room.idura.webhook_secret' => null]);

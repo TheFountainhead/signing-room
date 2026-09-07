@@ -9,6 +9,7 @@ use Fountainhead\SigningRoom\Models\SigningParty;
 use Fountainhead\SigningRoom\Tests\TestCase;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
+use PHPUnit\Framework\Attributes\Test;
 
 class AuthenticationTest extends TestCase
 {
@@ -45,7 +46,7 @@ class AuthenticationTest extends TestCase
     // Token validation on /sign/{uuid}
     // -------------------------------------------------------------------------
 
-    /** @test */
+    #[Test]
     public function signing_link_without_token_returns_403(): void
     {
         $envelope = $this->createEnvelope();
@@ -55,7 +56,7 @@ class AuthenticationTest extends TestCase
             ->assertForbidden();
     }
 
-    /** @test */
+    #[Test]
     public function signing_link_with_wrong_token_returns_403(): void
     {
         $envelope = $this->createEnvelope();
@@ -65,7 +66,7 @@ class AuthenticationTest extends TestCase
             ->assertForbidden();
     }
 
-    /** @test */
+    #[Test]
     public function signing_link_with_valid_token_returns_200(): void
     {
         $envelope = $this->createEnvelope();
@@ -79,7 +80,7 @@ class AuthenticationTest extends TestCase
     // Dashboard requires CPR session
     // -------------------------------------------------------------------------
 
-    /** @test */
+    #[Test]
     public function dashboard_without_cpr_session_redirects_to_landing(): void
     {
         $response = $this->get(route('signing-room.portal.dashboard'));
@@ -92,7 +93,7 @@ class AuthenticationTest extends TestCase
     // Landing page content
     // -------------------------------------------------------------------------
 
-    /** @test */
+    #[Test]
     public function landing_page_shows_mitid_button(): void
     {
         // hasCriiptoVerify = true because criipto_verify.client_id is set in TestCase
@@ -101,7 +102,7 @@ class AuthenticationTest extends TestCase
             ->assertSee('Log ind med MitID');
     }
 
-    /** @test */
+    #[Test]
     public function landing_page_does_not_show_email_input_by_default(): void
     {
         // The email input only appears when verify_email session flag is set
@@ -136,7 +137,7 @@ class AuthenticationTest extends TestCase
         return 'test-state';
     }
 
-    /** @test */
+    #[Test]
     public function mitid_login_backfills_orphan_parties_with_matching_email(): void
     {
         // Happy path: user has one confirmed party with cpr_hash populated on
@@ -173,11 +174,10 @@ class AuthenticationTest extends TestCase
     }
 
     /**
-     * @test
-     *
      * P1 REGRESSION: a shared email with two or more known CPRs must never
      * cause one user's login to overwrite another user's orphan party.
      */
+    #[Test]
     public function mitid_login_refuses_to_backfill_orphans_on_shared_email(): void
     {
         $mine       = '1234567890';
@@ -222,7 +222,7 @@ class AuthenticationTest extends TestCase
         $this->assertNull($orphan->refresh()->cpr_hash);
     }
 
-    /** @test */
+    #[Test]
     public function mitid_login_refuses_to_backfill_orphan_with_mismatched_cpr_last_four(): void
     {
         $cpr     = '1234567890'; // last 4 = 7890
@@ -259,7 +259,7 @@ class AuthenticationTest extends TestCase
         $this->assertNull($orphan->refresh()->cpr_hash);
     }
 
-    /** @test */
+    #[Test]
     public function mitid_login_backfills_orphan_with_matching_cpr_last_four(): void
     {
         $cpr     = '1234567890'; // last 4 = 7890
@@ -293,7 +293,7 @@ class AuthenticationTest extends TestCase
         $this->assertSame($cprHash, $orphan->refresh()->cpr_hash);
     }
 
-    /** @test */
+    #[Test]
     public function mitid_login_logs_audit_event_when_backfilling_orphan(): void
     {
         $cpr     = '1234567890';

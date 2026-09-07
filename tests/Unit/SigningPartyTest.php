@@ -8,6 +8,7 @@ use Fountainhead\SigningRoom\Models\SigningEnvelope;
 use Fountainhead\SigningRoom\Models\SigningParty;
 use Fountainhead\SigningRoom\Tests\TestCase;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use PHPUnit\Framework\Attributes\Test;
 
 class SigningPartyTest extends TestCase
 {
@@ -36,7 +37,7 @@ class SigningPartyTest extends TestCase
     // CPR mutator
     // -------------------------------------------------------------------------
 
-    /** @test */
+    #[Test]
     public function cpr_mutator_sets_both_encrypted_and_hash(): void
     {
         $party = $this->createEnvelopeAndParty();
@@ -59,7 +60,7 @@ class SigningPartyTest extends TestCase
     // signingUrl()
     // -------------------------------------------------------------------------
 
-    /** @test */
+    #[Test]
     public function signing_url_contains_token_query_parameter(): void
     {
         $party = $this->createEnvelopeAndParty();
