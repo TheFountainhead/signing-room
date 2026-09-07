@@ -2,11 +2,10 @@
 
 namespace Fountainhead\SigningRoom\Tests\Unit;
 
-use PHPUnit\Framework\Attributes\Test;
-
 use Fountainhead\SigningRoom\Services\IduraSignatureService;
 use Fountainhead\SigningRoom\Tests\TestCase;
 use Illuminate\Support\Facades\Http;
+use PHPUnit\Framework\Attributes\Test;
 
 class IduraSignatureServiceTest extends TestCase
 {

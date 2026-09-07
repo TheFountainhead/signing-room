@@ -2,8 +2,6 @@
 
 namespace Fountainhead\SigningRoom\Tests\Feature;
 
-use PHPUnit\Framework\Attributes\Test;
-
 use Fountainhead\SigningRoom\Enums\EnvelopeStatus;
 use Fountainhead\SigningRoom\Enums\SigningPartyStatus;
 use Fountainhead\SigningRoom\Models\SigningEnvelope;
@@ -11,6 +9,7 @@ use Fountainhead\SigningRoom\Models\SigningParty;
 use Fountainhead\SigningRoom\Tests\TestCase;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
+use PHPUnit\Framework\Attributes\Test;
 
 class AuthenticationTest extends TestCase
 {

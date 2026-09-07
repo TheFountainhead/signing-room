@@ -2,8 +2,6 @@
 
 namespace Fountainhead\SigningRoom\Tests\Feature;
 
-use PHPUnit\Framework\Attributes\Test;
-
 use Fountainhead\SigningRoom\Enums\EnvelopeStatus;
 use Fountainhead\SigningRoom\Enums\SigningPartyRole;
 use Fountainhead\SigningRoom\Enums\SigningPartyStatus;
@@ -18,6 +16,7 @@ use Fountainhead\SigningRoom\Tests\TestCase;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Notification;
+use PHPUnit\Framework\Attributes\Test;
 
 /**
  * Kristian reported (jun 2026) that sending envelopes felt slow. Root cause:

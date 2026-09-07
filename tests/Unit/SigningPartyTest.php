@@ -2,14 +2,13 @@
 
 namespace Fountainhead\SigningRoom\Tests\Unit;
 
-use PHPUnit\Framework\Attributes\Test;
-
 use Fountainhead\SigningRoom\Enums\EnvelopeStatus;
 use Fountainhead\SigningRoom\Enums\SigningPartyStatus;
 use Fountainhead\SigningRoom\Models\SigningEnvelope;
 use Fountainhead\SigningRoom\Models\SigningParty;
 use Fountainhead\SigningRoom\Tests\TestCase;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use PHPUnit\Framework\Attributes\Test;
 
 class SigningPartyTest extends TestCase
 {

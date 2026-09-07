@@ -2,8 +2,6 @@
 
 namespace Fountainhead\SigningRoom\Tests\Feature;
 
-use PHPUnit\Framework\Attributes\Test;
-
 use Fountainhead\SigningRoom\Enums\EnvelopeStatus;
 use Fountainhead\SigningRoom\Enums\SigningPartyStatus;
 use Fountainhead\SigningRoom\Livewire\Portal\SignDocument;
@@ -12,6 +10,7 @@ use Fountainhead\SigningRoom\Models\SigningParty;
 use Fountainhead\SigningRoom\Tests\TestCase;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Livewire\Livewire;
+use PHPUnit\Framework\Attributes\Test;
 
 /**
  * Kristian reported (jun 2026): "da jeg afviste kom jeg ikke tilbage" — the

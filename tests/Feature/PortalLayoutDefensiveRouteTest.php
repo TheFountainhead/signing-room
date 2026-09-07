@@ -2,10 +2,9 @@
 
 namespace Fountainhead\SigningRoom\Tests\Feature;
 
-use PHPUnit\Framework\Attributes\Test;
-
 use Fountainhead\SigningRoom\Tests\TestCase;
 use Illuminate\Support\Facades\Route;
+use PHPUnit\Framework\Attributes\Test;
 
 /**
  * Regression test for the Gesda 2026-04-30 incident: tenant deploy missing
