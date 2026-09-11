@@ -283,7 +283,16 @@ class SigningRoomService
                 . '/' . $envelope->uuid . '/signed.pdf';
 
             $disk = Storage::disk(config('signing-room.storage.disk', 'local'));
-            $disk->put($storagePath, $signedPdf);
+
+            // Diskene er konfigureret med 'throw' => false, så en fejlet upload
+            // returnerer false i stedet for at kaste. Uden dette tjek gemmer vi
+            // stien til en fil der aldrig kom frem, og Idura sletter sin kopi
+            // efter retain_documents dage. Så er dokumentet væk uden spor.
+            if ($disk->put($storagePath, $signedPdf) === false) {
+                throw new \RuntimeException(
+                    "Kunne ikke gemme signeret PDF for kuvert {$envelope->uuid} på sti {$storagePath}."
+                );
+            }
 
             $envelope->update([
                 'signed_document' => $storagePath,
