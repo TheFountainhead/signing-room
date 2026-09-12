@@ -84,9 +84,17 @@ Route::middleware(config('signing-room.routes.portal_middleware', ['web']))
 
             $disk = Storage::disk(config('signing-room.storage.disk', 'local'));
 
+            // Default to inline: this route is iframed during signing
+            // (sign-document.blade.php), which is what X-Frame-Options and
+            // frame-ancestors below exist for. The completion mail passes
+            // ?download=1 so its "Download" button actually downloads.
+            $filename = str($envelope->title)->slug() . '-signeret.pdf';
+
             return response($disk->get($document), 200, [
                 'Content-Type' => 'application/pdf',
-                'Content-Disposition' => 'inline',
+                'Content-Disposition' => request()->boolean('download')
+                    ? 'attachment; filename="' . $filename . '"'
+                    : 'inline',
                 'X-Frame-Options' => 'SAMEORIGIN',
                 'Content-Security-Policy' => "frame-ancestors 'self'",
             ]);

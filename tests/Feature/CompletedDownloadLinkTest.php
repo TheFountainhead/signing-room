@@ -106,6 +106,106 @@ class CompletedDownloadLinkTest extends TestCase
     }
 
     #[Test]
+    public function the_mail_link_downloads_while_the_signing_iframe_stays_inline(): void
+    {
+        $envelope = $this->createEnvelope();
+        $party = $this->createParty($envelope);
+
+        \Illuminate\Support\Facades\Storage::fake('local');
+        \Illuminate\Support\Facades\Storage::disk('local')
+            ->put('signing-room/test-signed.pdf', '%PDF-1.4 signed');
+
+        $base = route('signing-room.portal.pdf', $party->uuid)
+            . '?token=' . $party->signing_token;
+
+        // The completion mail's button must actually download.
+        $this->get($base . '&download=1')
+            ->assertOk()
+            ->assertHeader('Content-Disposition', 'attachment; filename="allonge-til-kontrakt-signeret.pdf"');
+
+        // The signing preview iframe must keep rendering in place.
+        $this->get($base)
+            ->assertOk()
+            ->assertHeader('Content-Disposition', 'inline');
+    }
+
+    /**
+     * Driven through the real public path (handleSigned -> completeEnvelope)
+     * rather than by calling the private method: completion is a consequence
+     * of the last signature, not something a caller triggers. Idura and the
+     * disk are faked the same way SignedPdfUploadFailureTest does it.
+     */
+    #[Test]
+    public function only_parties_who_signed_receive_the_completion_mail(): void
+    {
+        \Illuminate\Support\Facades\Notification::fake();
+
+        $envelope = $this->createEnvelope([
+            'status'                   => EnvelopeStatus::Sent,
+            'signed_document'          => null,
+            'completed_at'             => null,
+            'idura_signature_order_id' => 'SignatureOrder:tenant|order-abc',
+        ]);
+
+        // 🪤 isAllRoundsComplete() (SigningEnvelope:60) is NOT the same
+        // predicate as unsignedCurrentRoundParties() (line 49): it requires
+        // EVERY party with role=signer to have status=signed. A rejected
+        // *signer* therefore blocks completion forever — by design, since a
+        // rejected envelope is not a completed one. So both non-signing
+        // parties here must be viewers, or completeEnvelope never runs.
+        $rejected = $this->createParty($envelope, [
+            'email'  => 'rejected@example.com',
+            'status' => SigningPartyStatus::Rejected,
+            'role'   => SigningPartyRole::Viewer->value,
+        ]);
+
+        // A viewer who never signed anything.
+        $viewer = $this->createParty($envelope, [
+            'email'  => 'viewer@example.com',
+            'status' => SigningPartyStatus::Viewed,
+            'role'   => SigningPartyRole::Viewer->value,
+        ]);
+
+        // The last outstanding signer — signing him completes the envelope.
+        $signer = $this->createParty($envelope, [
+            'email'  => 'signed@example.com',
+            'status' => SigningPartyStatus::Pending,
+        ]);
+
+        $idura = $this->createMock(\Fountainhead\SigningRoom\Services\IduraSignatureService::class);
+        $idura->method('closeOrder')->willReturn([
+            'documents' => [['blob' => base64_encode('%PDF-1.4 signeret')]],
+        ]);
+
+        $disk = $this->createMock(\Illuminate\Contracts\Filesystem\Filesystem::class);
+        $disk->method('put')->willReturn(true);
+        \Illuminate\Support\Facades\Storage::shouldReceive('disk')->andReturn($disk);
+
+        (new \Fountainhead\SigningRoom\Services\SigningRoomService($idura))
+            ->handleSigned($signer);
+
+        $envelope->refresh();
+        $this->assertEquals(EnvelopeStatus::Completed, $envelope->status);
+
+        // The signer gets his document.
+        \Illuminate\Support\Facades\Notification::assertSentTo(
+            $signer,
+            EnvelopeCompletedNotification::class,
+        );
+
+        // A permanent key to the signed document must not reach someone who
+        // rejected it, nor a viewer who never signed at all.
+        \Illuminate\Support\Facades\Notification::assertNotSentTo(
+            $rejected,
+            EnvelopeCompletedNotification::class,
+        );
+        \Illuminate\Support\Facades\Notification::assertNotSentTo(
+            $viewer,
+            EnvelopeCompletedNotification::class,
+        );
+    }
+
+    #[Test]
     public function the_document_is_still_refused_without_a_valid_token(): void
     {
         $envelope = $this->createEnvelope();
@@ -121,7 +221,7 @@ class CompletedDownloadLinkTest extends TestCase
     }
 
     #[Test]
-    public function the_creator_still_receives_a_working_mail(): void
+    public function the_creator_is_linked_to_the_admin_page_not_the_party_download(): void
     {
         $envelope = $this->createEnvelope();
         $this->createParty($envelope);
@@ -140,8 +240,15 @@ class CompletedDownloadLinkTest extends TestCase
 
         $html = $this->renderMailFor(new EnvelopeCompletedNotification($envelope), $creator);
 
-        // He keeps the envelope-keyed link, which his admin session satisfies.
-        $this->assertStringContainsString('/download/' . $envelope->uuid, $html);
+        // He is an admin, so he gets the admin page for the envelope.
+        $this->assertStringContainsString(
+            route('signing-room.admin.show', $envelope->uuid),
+            $html,
+        );
+
+        // Not the envelope download route: he is not a party, and
+        // routes/portal.php:50 requires the viewer to be one, so it 403s.
+        $this->assertStringNotContainsString('/download/' . $envelope->uuid, $html);
 
         // And he must NOT be handed a party's bearer token. If the branch were
         // written the wrong way round, or dropped, this is what would catch it.
@@ -149,5 +256,29 @@ class CompletedDownloadLinkTest extends TestCase
             $this->assertStringNotContainsString($party->signing_token, $html);
         }
         $this->assertStringNotContainsString('/pdf/', $html);
+    }
+
+    /**
+     * Locks the fact that made the previous version of this test misleading:
+     * it asserted the creator's link was PRESENT, never that it RESOLVED. The
+     * creator is not a party, so the envelope download route refuses him —
+     * measured, not assumed.
+     */
+    #[Test]
+    public function the_download_route_refuses_a_logged_in_user_who_is_not_a_party(): void
+    {
+        $envelope = $this->createEnvelope();
+        $this->createParty($envelope);
+
+        $creator = new \Illuminate\Foundation\Auth\User();
+        $creator->forceFill([
+            'id'    => 1,
+            'name'  => 'Frederik',
+            'email' => 'fred@example.com',
+        ]);
+
+        $this->actingAs($creator)
+            ->get(route('signing-room.portal.download', $envelope->uuid))
+            ->assertForbidden();
     }
 }

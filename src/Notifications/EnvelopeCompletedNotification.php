@@ -29,14 +29,23 @@ class EnvelopeCompletedNotification extends Notification implements ShouldQueue
         // A signer clicking from his mail client has no portal session, so the
         // envelope-keyed download route would refuse him with a 403. Link him
         // to his own party-keyed route with his signing_token instead — the
-        // same idiom DocumentReadyNotification uses. The creator is notified
-        // with this very class too (SigningRoomService::notifyCreator) but is
-        // an App\Models\User with no token, and reaches the envelope route
-        // through its authenticated-admin branch.
+        // same idiom DocumentReadyNotification uses. A signer only ever reaches
+        // the one document he signed.
+        //
+        // The creator is notified with this very class too
+        // (SigningRoomService::notifyCreator) but is an App\Models\User, not a
+        // party. The download route requires the viewer to BE a party on the
+        // envelope (routes/portal.php:50 matches auth()->user()->email against
+        // the parties), and createEnvelope never inserts the creator as one —
+        // so that link 403s for him. He is an admin, so send him to the admin
+        // page for the envelope, which his session already grants.
         $downloadUrl = $notifiable instanceof SigningParty
             ? route('signing-room.portal.pdf', $notifiable->uuid)
-                . '?' . http_build_query(['token' => $notifiable->signing_token])
-            : route('signing-room.portal.download', $this->envelope->uuid);
+                . '?' . http_build_query([
+                    'token' => $notifiable->signing_token,
+                    'download' => 1,
+                ])
+            : route('signing-room.admin.show', $this->envelope->uuid);
 
         $mail = (new MailMessage)
             ->subject('Underskrevet: ' . $this->envelope->title)
