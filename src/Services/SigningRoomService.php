@@ -306,7 +306,11 @@ class SigningRoomService
 
         $envelope->logEvent(SigningEventType::EnvelopeCompleted);
 
-        // Notify all parties that the envelope is completed
+        // Every party is told the envelope is final — this mail is their only
+        // notification of it, and viewers are attached precisely so they can
+        // see the document. Who gets a *key* is decided in the notification:
+        // only a party who actually signed receives a token link; everyone
+        // else is pointed at the portal to identify themselves with MitID.
         foreach ($envelope->parties as $party) {
             $party->notify(new EnvelopeCompletedNotification($envelope));
         }

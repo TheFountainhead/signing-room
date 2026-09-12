@@ -14,7 +14,7 @@
     </div>
 
     <p style="text-align: center; margin: 32px 0;">
-        <a href="{{ $downloadUrl }}" class="email-btn">Download signeret dokument</a>
+        <a href="{{ $downloadUrl }}" class="email-btn">{{ $ctaLabel ?? 'Se dokumentet' }}</a>
     </p>
 
     <hr class="email-divider">
