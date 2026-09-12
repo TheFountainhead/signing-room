@@ -2,6 +2,7 @@
 
 namespace Fountainhead\SigningRoom\Notifications;
 
+use Fountainhead\SigningRoom\Enums\SigningPartyStatus;
 use Fountainhead\SigningRoom\Models\SigningEnvelope;
 use Fountainhead\SigningRoom\Models\SigningParty;
 use Fountainhead\SigningRoom\Notifications\Concerns\HasBranding;
@@ -32,20 +33,34 @@ class EnvelopeCompletedNotification extends Notification implements ShouldQueue
         // same idiom DocumentReadyNotification uses. A signer only ever reaches
         // the one document he signed.
         //
-        // The creator is notified with this very class too
-        // (SigningRoomService::notifyCreator) but is an App\Models\User, not a
-        // party. The download route requires the viewer to BE a party on the
-        // envelope (routes/portal.php:50 matches auth()->user()->email against
-        // the parties), and createEnvelope never inserts the creator as one —
-        // so that link 403s for him. He is an admin, so send him to the admin
-        // page for the envelope, which his session already grants.
-        $downloadUrl = $notifiable instanceof SigningParty
-            ? route('signing-room.portal.pdf', $notifiable->uuid)
+        // Only a party who actually signed gets that token: it is a permanent,
+        // forwardable key to the signed PDF. A viewer — or a party left at
+        // rejected/error — is still told the document is final, but is sent to
+        // the portal, where MitID decides what he may see. Withholding the key
+        // is not the same as withholding the news.
+        $isSigner = $notifiable instanceof SigningParty
+            && $notifiable->status === SigningPartyStatus::Signed;
+
+        if ($isSigner) {
+            $downloadUrl = route('signing-room.portal.pdf', $notifiable->uuid)
                 . '?' . http_build_query([
                     'token' => $notifiable->signing_token,
                     'download' => 1,
-                ])
-            : route('signing-room.admin.show', $this->envelope->uuid);
+                ]);
+            $ctaLabel = 'Download signeret dokument';
+        } elseif ($notifiable instanceof SigningParty) {
+            $downloadUrl = route('signing-room.portal.landing');
+            $ctaLabel = 'Se dokumentet i underskriftrummet';
+        } else {
+            // The creator is an App\Models\User, not a party. The download
+            // route requires the viewer to BE a party (routes/portal.php:50),
+            // and createEnvelope never inserts him as one — so that link 403s
+            // for him. He is an admin, so send him to the admin page, which
+            // his session grants. Logged out he meets /login first, hence a
+            // label that promises a page rather than a file.
+            $downloadUrl = route('signing-room.admin.show', $this->envelope->uuid);
+            $ctaLabel = 'Åbn dokumentet i administrationen';
+        }
 
         $mail = (new MailMessage)
             ->subject('Underskrevet: ' . $this->envelope->title)
@@ -53,6 +68,7 @@ class EnvelopeCompletedNotification extends Notification implements ShouldQueue
                 'envelope' => $this->envelope,
                 'party' => $notifiable,
                 'downloadUrl' => $downloadUrl,
+                'ctaLabel' => $ctaLabel,
             ]);
 
         return $this->applyBranding($mail, $this->envelope);

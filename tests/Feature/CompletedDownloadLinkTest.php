@@ -118,10 +118,16 @@ class CompletedDownloadLinkTest extends TestCase
         $base = route('signing-room.portal.pdf', $party->uuid)
             . '?token=' . $party->signing_token;
 
-        // The completion mail's button must actually download.
-        $this->get($base . '&download=1')
-            ->assertOk()
-            ->assertHeader('Content-Disposition', 'attachment; filename="allonge-til-kontrakt-signeret.pdf"');
+        // The completion mail's button must actually download. Laravel builds
+        // the header itself, and Symfony's exact formatting varies (quotes are
+        // omitted for token-safe names, and a filename*=utf-8'' fallback is
+        // added for non-ASCII), so assert the parts that carry meaning rather
+        // than the whole string.
+        $response = $this->get($base . '&download=1')->assertOk();
+        $disposition = $response->headers->get('Content-Disposition');
+
+        $this->assertStringStartsWith('attachment', $disposition);
+        $this->assertStringContainsString('allonge-til-kontrakt-signeret.pdf', $disposition);
 
         // The signing preview iframe must keep rendering in place.
         $this->get($base)
@@ -187,22 +193,76 @@ class CompletedDownloadLinkTest extends TestCase
         $envelope->refresh();
         $this->assertEquals(EnvelopeStatus::Completed, $envelope->status);
 
-        // The signer gets his document.
-        \Illuminate\Support\Facades\Notification::assertSentTo(
-            $signer,
-            EnvelopeCompletedNotification::class,
-        );
+        // EVERY party is told the envelope is final — this mail is their only
+        // notification of it. Filtering recipients here would silently cut
+        // viewers off, since a viewer is never notified to sign and so can
+        // never reach status=signed (handleSigned:140 is the only writer).
+        foreach ([$signer, $viewer, $rejected] as $party) {
+            \Illuminate\Support\Facades\Notification::assertSentTo(
+                $party,
+                EnvelopeCompletedNotification::class,
+            );
+        }
+    }
 
-        // A permanent key to the signed document must not reach someone who
-        // rejected it, nor a viewer who never signed at all.
-        \Illuminate\Support\Facades\Notification::assertNotSentTo(
-            $rejected,
-            EnvelopeCompletedNotification::class,
-        );
-        \Illuminate\Support\Facades\Notification::assertNotSentTo(
-            $viewer,
-            EnvelopeCompletedNotification::class,
-        );
+    /**
+     * The key, not the mail, is what gets withheld: only a party who actually
+     * signed receives a bearer token to the signed PDF.
+     */
+    #[Test]
+    public function only_a_signer_gets_a_token_link_others_are_sent_to_the_portal(): void
+    {
+        $envelope = $this->createEnvelope();
+
+        $signer = $this->createParty($envelope, [
+            'email'  => 'signed@example.com',
+            'status' => SigningPartyStatus::Signed,
+        ]);
+        $viewer = $this->createParty($envelope, [
+            'email'  => 'viewer@example.com',
+            'status' => SigningPartyStatus::Viewed,
+            'role'   => SigningPartyRole::Viewer->value,
+        ]);
+
+        $signerHtml = $this->renderMailFor(new EnvelopeCompletedNotification($envelope), $signer);
+        $viewerHtml = $this->renderMailFor(new EnvelopeCompletedNotification($envelope), $viewer);
+
+        // The signer gets his own key, and a button that downloads.
+        $this->assertStringContainsString($signer->signing_token, $signerHtml);
+        $this->assertStringContainsString('download=1', $signerHtml);
+        $this->assertStringContainsString('Download signeret dokument', $signerHtml);
+
+        // The viewer is told, but handed no key at all — neither his own nor
+        // anyone else's — and the label must not promise a download.
+        $this->assertStringNotContainsString($viewer->signing_token, $viewerHtml);
+        $this->assertStringNotContainsString($signer->signing_token, $viewerHtml);
+        $this->assertStringNotContainsString('/pdf/', $viewerHtml);
+        $this->assertStringContainsString(route('signing-room.portal.landing'), $viewerHtml);
+        $this->assertStringNotContainsString('Download signeret dokument', $viewerHtml);
+    }
+
+    /**
+     * Finding #8 from review: the rejected case was only ever exercised
+     * against a rejected VIEWER, who is excluded by role anyway. A rejected
+     * signer is the case that matters — he must not keep a key to a document
+     * he refused to sign.
+     */
+    #[Test]
+    public function a_signer_who_rejected_gets_no_token_link(): void
+    {
+        $envelope = $this->createEnvelope();
+
+        $rejected = $this->createParty($envelope, [
+            'email'  => 'rejected@example.com',
+            'status' => SigningPartyStatus::Rejected,
+            'role'   => SigningPartyRole::Signer->value,
+        ]);
+
+        $html = $this->renderMailFor(new EnvelopeCompletedNotification($envelope), $rejected);
+
+        $this->assertStringNotContainsString($rejected->signing_token, $html);
+        $this->assertStringNotContainsString('/pdf/', $html);
+        $this->assertStringContainsString(route('signing-room.portal.landing'), $html);
     }
 
     #[Test]

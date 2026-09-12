@@ -306,15 +306,12 @@ class SigningRoomService
 
         $envelope->logEvent(SigningEventType::EnvelopeCompleted);
 
-        // Notify the parties who actually signed. The mail now carries a
-        // permanent token link to the signed document, so it must not go to
-        // viewers (who never signed) or to parties who rejected or errored —
-        // they have no claim to a key to the finished document.
-        $signedParties = $envelope->parties()
-            ->where('status', SigningPartyStatus::Signed->value)
-            ->get();
-
-        foreach ($signedParties as $party) {
+        // Every party is told the envelope is final — this mail is their only
+        // notification of it, and viewers are attached precisely so they can
+        // see the document. Who gets a *key* is decided in the notification:
+        // only a party who actually signed receives a token link; everyone
+        // else is pointed at the portal to identify themselves with MitID.
+        foreach ($envelope->parties as $party) {
             $party->notify(new EnvelopeCompletedNotification($envelope));
         }
 

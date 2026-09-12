@@ -84,17 +84,26 @@ Route::middleware(config('signing-room.routes.portal_middleware', ['web']))
 
             $disk = Storage::disk(config('signing-room.storage.disk', 'local'));
 
-            // Default to inline: this route is iframed during signing
-            // (sign-document.blade.php), which is what X-Frame-Options and
-            // frame-ancestors below exist for. The completion mail passes
-            // ?download=1 so its "Download" button actually downloads.
-            $filename = str($envelope->title)->slug() . '-signeret.pdf';
+            // The completion mail passes ?download=1 so its button actually
+            // downloads. Laravel builds the Content-Disposition itself here,
+            // which escapes the name and adds an RFC 5987 filename* fallback —
+            // str()->slug() returns an EMPTY string for titles with no ASCII
+            // (verified: '用户协议' and '!!!' both slug to ''), hence the uuid
+            // fallback. The suffix follows the document actually served, since
+            // $document falls back to the unsigned original above.
+            if (request()->boolean('download')) {
+                $slug = str($envelope->title)->slug()->toString() ?: $envelope->uuid;
+                $suffix = $document === $envelope->signed_document ? '-signeret' : '';
 
+                return $disk->download($document, $slug . $suffix . '.pdf');
+            }
+
+            // Inline by default: this route is iframed during signing
+            // (sign-document.blade.php), which is what X-Frame-Options and
+            // frame-ancestors below exist for.
             return response($disk->get($document), 200, [
                 'Content-Type' => 'application/pdf',
-                'Content-Disposition' => request()->boolean('download')
-                    ? 'attachment; filename="' . $filename . '"'
-                    : 'inline',
+                'Content-Disposition' => 'inline',
                 'X-Frame-Options' => 'SAMEORIGIN',
                 'Content-Security-Policy' => "frame-ancestors 'self'",
             ]);
