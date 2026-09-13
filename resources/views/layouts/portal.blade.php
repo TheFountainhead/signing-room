@@ -11,6 +11,10 @@
 
     <style>
         :root {
+            /* Sidens bund, afstemt med frankston.io (ft-editorial.css --bg).
+               Bevidst adskilt fra --ft-pink, som ogsaa maler knapper, badges
+               og aktivt menupunkt: aendres den, forsvinder de. */
+            --ft-site: #f6efe3;
             --ft-pink: #FFF1E5;
             --ft-pink-light: #FFF7F0;
             --ft-pink-dark: #F2DFCE;
@@ -32,7 +36,7 @@
             font-size: 1.125rem;
             line-height: 1.7;
             color: var(--ft-dark);
-            background: var(--ft-pink);
+            background: var(--ft-site);
             min-height: 100vh;
         }
 

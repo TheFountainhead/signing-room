@@ -11,6 +11,10 @@
 
     <style>
         :root {
+            /* Sidens bund, afstemt med frankston.io (ft-editorial.css --bg).
+               Bevidst adskilt fra --ft-pink-light, som ogsaa maler sidebar,
+               hover og aktivt menupunkt: aendres den, forsvinder de. */
+            --ft-site: #f6efe3;
             --ft-pink: #FFF1E5;
             --ft-pink-light: #FFF7F0;
             --ft-pink-dark: #F2DFCE;
@@ -30,7 +34,7 @@
         body {
             font-family: 'Source Sans 3', -apple-system, BlinkMacSystemFont, sans-serif;
             font-size: 1rem; line-height: 1.6;
-            color: var(--ft-dark); background: var(--ft-pink-light);
+            color: var(--ft-dark); background: var(--ft-site);
             min-height: 100vh;
         }
 

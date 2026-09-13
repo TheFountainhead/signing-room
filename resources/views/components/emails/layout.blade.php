@@ -18,7 +18,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ $subject ?? $brandName . ' Underskriftrum' }}</title>
     <style>
-        body { margin: 0; padding: 0; background: #FFF1E5; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+        body { margin: 0; padding: 0; background: #f6efe3; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
         .email-wrapper { max-width: 600px; margin: 0 auto; padding: 32px 16px; }
         .email-header { text-align: center; padding: 24px 0; }
         .email-logo { font-family: Georgia, 'Times New Roman', serif; font-size: 1.5rem; font-weight: 700; color: #1A1817; text-decoration: none; }
