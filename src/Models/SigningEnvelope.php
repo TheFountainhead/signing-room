@@ -54,7 +54,11 @@ class SigningEnvelope extends Model
 
     public function isCurrentRoundComplete(): bool
     {
-        return $this->unsignedCurrentRoundParties()->count() === 0;
+        // Kun underskrivere afgør om runden er færdig. En kopimodtager
+        // underskriver aldrig og ville ellers holde runden åben for evigt.
+        return $this->unsignedCurrentRoundParties()
+            ->where('role', 'signer')
+            ->doesntExist();
     }
 
     public function isAllRoundsComplete(): bool

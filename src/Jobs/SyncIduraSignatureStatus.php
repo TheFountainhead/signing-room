@@ -33,25 +33,51 @@ class SyncIduraSignatureStatus implements ShouldQueue
             ->get();
 
         foreach ($envelopes as $envelope) {
-            $order = $idura->getOrderStatus($envelope->idura_signature_order_id);
+            // Én kuvert der fejler, må ikke stoppe synkroniseringen af resten.
+            try {
+                $this->syncEnvelope($envelope, $idura, $service);
+            } catch (\Throwable $e) {
+                report($e);
+            }
+        }
+    }
 
-            foreach ($order['signatories'] ?? [] as $iduraSignatory) {
-                $party = $envelope->parties()
-                    ->where('idura_signatory_id', $iduraSignatory['id'])
-                    ->first();
+    private function syncEnvelope(SigningEnvelope $envelope, IduraSignatureService $idura, SigningRoomService $service): void
+    {
+        $order = $idura->getOrderStatus($envelope->idura_signature_order_id);
 
-                if (! $party) {
-                    continue;
-                }
+        $handledSignature = false;
 
-                if ($iduraSignatory['status'] === 'SIGNED' && $party->status->value !== 'signed') {
-                    $service->handleSigned($party, ['synced_from_polling' => true]);
-                }
+        foreach ($order['signatories'] ?? [] as $iduraSignatory) {
+            $party = $envelope->parties()
+                ->where('idura_signatory_id', $iduraSignatory['id'])
+                ->first();
+
+            if (! $party) {
+                continue;
             }
 
-            if ($order['status'] === 'EXPIRED' && $envelope->status !== EnvelopeStatus::Expired) {
-                $envelope->update(['status' => EnvelopeStatus::Expired]);
+            if ($iduraSignatory['status'] === 'SIGNED' && $party->status->value !== 'signed') {
+                $service->handleSigned($party, ['synced_from_polling' => true]);
+                $handledSignature = true;
             }
+        }
+
+        if ($order['status'] === 'EXPIRED' && $envelope->status !== EnvelopeStatus::Expired) {
+            $envelope->update(['status' => EnvelopeStatus::Expired]);
+
+            return;
+        }
+
+        // Alle underskrivere har underskrevet, men kuverten blev aldrig
+        // fuldført (fx fordi closeOrder fejlede). Prøv igen. handleSigned har
+        // allerede forsøgt i denne kørsel, hvis den lige blev kaldt.
+        $envelope->refresh();
+
+        if (! $handledSignature
+            && $envelope->status !== EnvelopeStatus::Completed
+            && $envelope->isAllRoundsComplete()) {
+            $service->completeEnvelope($envelope);
         }
     }
 }

@@ -273,4 +273,39 @@ class IduraSignatureServiceTest extends TestCase
                 && ($webhook['url'] ?? null) === 'https://example.com/webhook';
         });
     }
+    /**
+     * `role` i AddSignatoryInput er forældet fritekst, der står i PDF'en.
+     * Rollen skal i `signatoryRole`, ellers bliver alle oprettet som SIGNER
+     * (rodårsagen til kuvert 35). `preapproved` findes ikke på topniveau.
+     */
+    #[Test]
+    public function add_signatory_sends_signatory_role_and_not_the_deprecated_role_field(): void
+    {
+        Http::fake([
+            self::ENDPOINT => Http::response([
+                'data' => [
+                    'addSignatory' => [
+                        'signatory' => [
+                            'id' => 'sig-1', 'href' => 'https://x', 'reference' => 'ref-1',
+                            'status' => 'OPEN', 'signatoryRole' => 'SIGNER',
+                        ],
+                    ],
+                ],
+            ]),
+        ]);
+
+        $this->service()->addSignatories('order-123', [
+            ['reference' => 'ref-1', 'signatory_role' => 'signer', 'signing_sequence' => 2],
+        ]);
+
+        Http::assertSent(function ($request) {
+            $input = $request['variables']['input'];
+
+            return $input['signatoryRole'] === 'SIGNER'
+                && $input['signingSequence'] === 2
+                && ! array_key_exists('role', $input)
+                && ! array_key_exists('preapproved', $input)
+                && str_contains($request['query'], 'signatoryRole');
+        });
+    }
 }

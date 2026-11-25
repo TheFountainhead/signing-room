@@ -11,6 +11,7 @@ use Fountainhead\SigningRoom\Services\SigningRoomService;
 use Fountainhead\SigningRoom\Tests\TestCase;
 use Illuminate\Contracts\Filesystem\Filesystem;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Exceptions;
 use Illuminate\Support\Facades\Storage;
 use PHPUnit\Framework\Attributes\Test;
 
@@ -29,7 +30,9 @@ use PHPUnit\Framework\Attributes\Test;
  * opdage noget før nogen bad om at se det.
  *
  * Testene låser begge retninger, så rettelsen ikke kan falde tilbage:
- *   - fejlet upload → exception, ingen sti gemt, kuverten ikke Completed
+ *   - fejlet upload → exception rapporteres, ingen sti gemt, kuverten ikke
+ *     Completed. Siden 25/11-2026 kastes den ikke videre ud af handleSigned:
+ *     underskriften er gemt, og SyncIduraSignatureStatus fuldfører senere.
  *   - vellykket upload → sti gemt og kuverten fuldført som hidtil
  */
 class SignedPdfUploadFailureTest extends TestCase
@@ -80,6 +83,8 @@ class SignedPdfUploadFailureTest extends TestCase
     #[Test]
     public function a_failed_upload_aborts_instead_of_recording_a_path_to_a_missing_file(): void
     {
+        Exceptions::fake();
+
         $envelope = $this->createEnvelope();
         $party = $this->createParty($envelope);
 
@@ -91,23 +96,27 @@ class SignedPdfUploadFailureTest extends TestCase
 
         $service = new SigningRoomService($this->fakeIduraReturningSignedPdf());
 
-        $this->expectException(\RuntimeException::class);
+        $service->handleSigned($party);
 
-        try {
-            $service->handleSigned($party);
-        } finally {
-            $envelope->refresh();
+        // Fejlen må ikke forsvinde: den skal rapporteres (og dermed nå Flare).
+        Exceptions::assertReported(\RuntimeException::class);
 
-            $this->assertNull(
-                $envelope->signed_document,
-                'En sti må aldrig gemmes når filen ikke kom frem.'
-            );
-            $this->assertNotEquals(
-                EnvelopeStatus::Completed,
-                $envelope->status,
-                'Kuverten må ikke markeres fuldført uden en gemt PDF.'
-            );
-        }
+        $envelope->refresh();
+
+        $this->assertNull(
+            $envelope->signed_document,
+            'En sti må aldrig gemmes når filen ikke kom frem.'
+        );
+        $this->assertNotEquals(
+            EnvelopeStatus::Completed,
+            $envelope->status,
+            'Kuverten må ikke markeres fuldført uden en gemt PDF.'
+        );
+        $this->assertEquals(
+            SigningPartyStatus::Signed,
+            $party->fresh()->status,
+            'Underskriften skal bevares, så fuldførelsen kan genoptages.'
+        );
     }
 
     #[Test]

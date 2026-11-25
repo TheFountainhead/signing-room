@@ -11,7 +11,9 @@ use Fountainhead\SigningRoom\Models\SigningParty;
 use Fountainhead\SigningRoom\Notifications\DocumentReadyNotification;
 use Fountainhead\SigningRoom\Notifications\EnvelopeCompletedNotification;
 use Fountainhead\SigningRoom\Notifications\PartyRejectedNotification;
+use Fountainhead\SigningRoom\Notifications\PartySignedNotification;
 use Fountainhead\SigningRoom\Events\PartySignedEvent;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 
 class SigningRoomService
@@ -92,13 +94,27 @@ class SigningRoomService
             'idura_signature_order_id' => $order['id'],
         ]);
 
-        // Add all parties as signatories
-        $signatories = $envelope->parties->map(fn (SigningParty $party) => [
-            'reference' => $party->uuid,
-            'role' => strtoupper($party->role instanceof SigningPartyRole ? $party->role->value : $party->role),
-            'signing_sequence' => $party->signing_round,
-            'cpr' => $party->cpr_last_four ?: null,
-        ])->all();
+        // Kun underskrivere oprettes hos Idura. Tidligere blev kopimodtagere
+        // også sendt, og fordi rollen gik i det forældede fritekstfelt `role`
+        // i stedet for `signatoryRole`, blev de oprettet som SIGNER. En sådan
+        // "underskriver" underskriver aldrig, og så afviser Idura
+        // closeSignatureOrder med "Signature order has open signatory". Det
+        // låste kuvert 35 fast i prod (25/11-2026).
+        //
+        // Kopimodtageren får sin kopi via EnvelopeCompletedNotification og
+        // portalen, som ikke bruger noget Idura-id. En rigtig Idura-VIEWER
+        // ville kun kunne se dokumentet mens ordren er åben, medmindre der er
+        // evidence validation (CPR), som vi typisk ikke har for en kopimodtager.
+        $signatories = $envelope->parties
+            ->filter(fn (SigningParty $party) => $this->isSigner($party))
+            ->map(fn (SigningParty $party) => [
+                'reference' => $party->uuid,
+                'signatory_role' => 'SIGNER',
+                'signing_sequence' => $party->signing_round,
+                'cpr' => $party->cpr_last_four ?: null,
+            ])
+            ->values()
+            ->all();
 
         $iduraSignatories = $this->idura->addSignatories($order['id'], $signatories);
 
@@ -157,8 +173,23 @@ class SigningRoomService
 
         PartySignedEvent::dispatch($envelope, $party);
 
-        if ($envelope->isAllRoundsComplete()) {
-            $this->completeEnvelope($envelope);
+        $allSigned = $envelope->isAllRoundsComplete();
+
+        if (! $allSigned) {
+            // Ved den sidste underskrift får afsenderen i stedet
+            // EnvelopeCompletedNotification, så han ikke får to mails.
+            $this->notifyCreator($envelope, new PartySignedNotification($envelope, $party));
+        }
+
+        if ($allSigned) {
+            // Underskriften er gemt. Fejler fuldførelsen (Idura, disk), skal
+            // den ikke rulle underskriften tilbage eller tie: den rapporteres,
+            // og SyncIduraSignatureStatus prøver igen ved næste kørsel.
+            try {
+                $this->completeEnvelope($envelope);
+            } catch (\Throwable $e) {
+                report($e);
+            }
         } elseif ($envelope->isCurrentRoundComplete()) {
             $this->advanceRound($envelope);
         } else {
@@ -266,8 +297,60 @@ class SigningRoomService
 
     /**
      * Complete an envelope: close the Idura order and save the signed PDF.
+     *
+     * Idempotent: kan kaldes igen efter en fejl (fra handleSigned eller
+     * SyncIduraSignatureStatus). Kuverten låses under fuldførelsen, og en
+     * kuvert der allerede er Completed, eller hvor ikke alle underskrivere
+     * har underskrevet, røres ikke. Så sendes PDF og mails kun én gang.
+     *
+     * Returnerer true hvis netop dette kald fuldførte kuverten.
      */
-    private function completeEnvelope(SigningEnvelope $envelope): void
+    public function completeEnvelope(SigningEnvelope $envelope): bool
+    {
+        $completed = DB::transaction(function () use ($envelope) {
+            $locked = SigningEnvelope::query()
+                ->whereKey($envelope->getKey())
+                ->lockForUpdate()
+                ->first();
+
+            if (! $locked
+                || $locked->status === EnvelopeStatus::Completed
+                || ! $locked->isAllRoundsComplete()) {
+                return false;
+            }
+
+            $this->closeOrderAndStore($locked);
+
+            return true;
+        });
+
+        $envelope->refresh();
+
+        if (! $completed) {
+            return false;
+        }
+
+        $envelope->logEvent(SigningEventType::EnvelopeCompleted);
+
+        // Every party is told the envelope is final — this mail is their only
+        // notification of it, and viewers are attached precisely so they can
+        // see the document. Who gets a *key* is decided in the notification:
+        // only a party who actually signed receives a token link; everyone
+        // else is pointed at the portal to identify themselves with MitID.
+        foreach ($envelope->parties as $party) {
+            $party->notify(new EnvelopeCompletedNotification($envelope));
+        }
+
+        // Also notify the creator
+        $this->notifyCreator($envelope, new EnvelopeCompletedNotification($envelope));
+
+        return true;
+    }
+
+    /**
+     * Luk ordren hos Idura, gem den signerede PDF og markér kuverten Completed.
+     */
+    private function closeOrderAndStore(SigningEnvelope $envelope): void
     {
         $retainDays = config('signing-room.defaults.retain_documents', 7);
 
@@ -303,20 +386,13 @@ class SigningRoomService
             'status' => EnvelopeStatus::Completed,
             'completed_at' => now(),
         ]);
+    }
 
-        $envelope->logEvent(SigningEventType::EnvelopeCompleted);
+    private function isSigner(SigningParty $party): bool
+    {
+        $role = $party->role instanceof SigningPartyRole ? $party->role->value : $party->role;
 
-        // Every party is told the envelope is final — this mail is their only
-        // notification of it, and viewers are attached precisely so they can
-        // see the document. Who gets a *key* is decided in the notification:
-        // only a party who actually signed receives a token link; everyone
-        // else is pointed at the portal to identify themselves with MitID.
-        foreach ($envelope->parties as $party) {
-            $party->notify(new EnvelopeCompletedNotification($envelope));
-        }
-
-        // Also notify the creator
-        $this->notifyCreator($envelope, new EnvelopeCompletedNotification($envelope));
+        return ($role ?? SigningPartyRole::Signer->value) === SigningPartyRole::Signer->value;
     }
 
     /**
