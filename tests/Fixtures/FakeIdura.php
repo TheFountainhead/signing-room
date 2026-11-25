@@ -31,6 +31,9 @@ class FakeIdura extends IduraSignatureService
 
     public bool $failEvidence = false;
 
+    /** Kaldes midt i closeOrder, fx for at simulere en samtidig proces. */
+    public ?\Closure $duringClose = null;
+
     public function __construct() {}
 
     public function isConfigured(): bool
@@ -79,6 +82,10 @@ class FakeIdura extends IduraSignatureService
     public function closeOrder(string $orderId, int $retainDays = 7): array
     {
         $this->closeCalls++;
+
+        if ($this->duringClose) {
+            ($this->duringClose)();
+        }
 
         if ($this->orderStatus !== 'OPEN') {
             throw new RuntimeException('Idura GraphQL errors: Signature order is not open');

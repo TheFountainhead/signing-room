@@ -13,9 +13,9 @@ use Fountainhead\SigningRoom\Notifications\EnvelopeCompletedNotification;
 use Fountainhead\SigningRoom\Notifications\PartyRejectedNotification;
 use Fountainhead\SigningRoom\Notifications\PartySignedNotification;
 use Fountainhead\SigningRoom\Events\PartySignedEvent;
+use Fountainhead\SigningRoom\Exceptions\EnvelopeHasNoSignerException;
 use Fountainhead\SigningRoom\Exceptions\EnvelopeOrderNotOpenException;
 use Fountainhead\SigningRoom\Exceptions\SignedDocumentUnavailableException;
-use InvalidArgumentException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 
@@ -44,7 +44,7 @@ class SigningRoomService
         if (! $hasSigner) {
             // En kuvert uden underskrivere ville blive "fuldført" uden en
             // eneste underskrift.
-            throw new InvalidArgumentException('En kuvert skal have mindst én underskriver.');
+            throw new EnvelopeHasNoSignerException;
         }
 
         $expiresInDays ??= config('signing-room.defaults.expires_in_days', 30);
@@ -87,7 +87,7 @@ class SigningRoomService
     public function sendEnvelope(SigningEnvelope $envelope): SigningEnvelope
     {
         if (! $envelope->parties()->where('role', SigningPartyRole::Signer->value)->exists()) {
-            throw new InvalidArgumentException('En kuvert skal have mindst én underskriver.');
+            throw new EnvelopeHasNoSignerException;
         }
 
         $disk = Storage::disk(config('signing-room.storage.disk', 'local'));
@@ -170,7 +170,7 @@ class SigningRoomService
     /**
      * Handle a party signing event from the webhook.
      */
-    public function handleSigned(SigningParty $party, ?array $signatureData = null): void
+    public function handleSigned(SigningParty $party, ?array $signatureData = null): bool
     {
         // Claim underskriften atomisk. En gentaget webhook og sync-jobbet kan
         // behandle samme part samtidig; kun den der faktisk flytter rækken til
@@ -185,7 +185,7 @@ class SigningRoomService
             ]);
 
         if ($claimed === 0) {
-            return;
+            return false;
         }
 
         $party->refresh();
@@ -196,18 +196,13 @@ class SigningRoomService
         $envelope = $party->envelope;
 
         if ($envelope->isAllRoundsComplete()) {
-            // Underskriften er gemt. Fejler fuldførelsen (Idura, disk), skal
-            // den ikke rulle underskriften tilbage eller tie: den rapporteres,
-            // og SyncIduraSignatureStatus prøver igen ved næste kørsel.
-            // Afsenderen får EnvelopeCompletedNotification i stedet for
-            // PartySignedNotification, så han ikke får to mails.
-            try {
-                $this->completeEnvelope($envelope);
-            } catch (\Throwable $e) {
-                report($e);
-            }
+            // Underskriften er gemt. Fejler fuldførelsen (Idura, disk),
+            // rapporterer completeEnvelope det selv, og SyncIduraSignatureStatus
+            // prøver igen. Afsenderen får EnvelopeCompletedNotification i stedet
+            // for PartySignedNotification, så han ikke får to mails.
+            $this->completeEnvelope($envelope);
 
-            return;
+            return true;
         }
 
         if ($envelope->isCurrentRoundComplete()) {
@@ -230,11 +225,20 @@ class SigningRoomService
         // signing-room.notifications.party_signed.
         if (config('signing-room.notifications.party_signed', false)) {
             try {
-                $this->notifyCreator($envelope, PartySignedNotification::forParty($envelope, $party));
+                $notification = PartySignedNotification::forParty($envelope, $party);
+
+                // Har alle underskrivere underskrevet, men kuverten venter på
+                // noget andet (fx en gammel kopimodtager hos Idura), er
+                // "Du får besked, når alle parter har underskrevet" usandt.
+                if ($notification->signedCount < $notification->signerCount) {
+                    $this->notifyCreator($envelope, $notification);
+                }
             } catch (\Throwable $e) {
                 report($e);
             }
         }
+
+        return true;
     }
 
     /**
@@ -399,74 +403,135 @@ class SigningRoomService
     }
 
     /**
+     * Hvor længe en påbegyndt fuldførelse gælder. Dør processen undervejs, kan
+     * en ny overtage efter dette (Idura-kald har 30 s timeout).
+     */
+    private const COMPLETION_CLAIM_MINUTES = 10;
+
+    /**
      * Complete an envelope: close the Idura order and save the signed PDF.
      *
-     * Idempotent: kan kaldes igen efter en fejl (fra handleSigned eller
-     * SyncIduraSignatureStatus). Kuverten låses under fuldførelsen, og en
-     * kuvert der allerede er Completed, eller hvor ikke alle underskrivere
-     * har underskrevet, røres ikke. Så sendes PDF og mails kun én gang.
+     * Idempotent og genoptagelig (kaldes fra handleSigned og
+     * SyncIduraSignatureStatus):
+     *  1. kort, betinget claim (completion_started_at), kun hvis kuverten ikke
+     *     er fuldført, alle har underskrevet, og ingen anden er i gang;
+     *  2. Idura-kald og disk-skrivning UDEN lås;
+     *  3. én betinget skrivning, der markerer kuverten Completed.
+     * Kun det kald, der gennemfører trin 3, sender mails.
+     *
+     * Fejl i trin 2 rapporteres én gang pr. fejl (reportBlockedOnce), claimet
+     * frigives, og sync prøver igen ved næste kørsel.
      *
      * Returnerer true hvis netop dette kald fuldførte kuverten.
      */
     public function completeEnvelope(SigningEnvelope $envelope): bool
     {
-        $completed = DB::transaction(function () use ($envelope) {
-            $locked = SigningEnvelope::query()
-                ->whereKey($envelope->getKey())
-                ->lockForUpdate()
-                ->first();
-
-            if (! $locked) {
-                return false;
-            }
-
-            if ($locked->isCompleted()) {
-                // Allerede fuldført. Har en samtidig webhook overskrevet
-                // status, rettes den tilbage, uden nye mails.
-                if ($locked->status !== EnvelopeStatus::Completed) {
-                    $locked->update(['status' => EnvelopeStatus::Completed]);
-                }
-
-                return false;
-            }
-
-            if (! $locked->isAllRoundsComplete()) {
-                return false;
-            }
-
-            return $this->closeOrderAndStore($locked);
-        });
-
         $envelope->refresh();
 
-        if (! $completed) {
+        if ($envelope->isCompleted()) {
+            // Allerede fuldført. Har en samtidig webhook overskrevet status,
+            // rettes den tilbage, uden nye mails.
+            SigningEnvelope::query()
+                ->whereKey($envelope->getKey())
+                ->whereNot('status', EnvelopeStatus::Completed->value)
+                ->update(['status' => EnvelopeStatus::Completed->value]);
+
+            $envelope->refresh();
+
             return false;
         }
 
+        if (! $envelope->isAllRoundsComplete()) {
+            return false;
+        }
+
+        $claimed = SigningEnvelope::query()
+            ->whereKey($envelope->getKey())
+            ->whereNull('completed_at')
+            ->whereNull('signed_document')
+            ->whereNot('status', EnvelopeStatus::Completed->value)
+            ->where(fn ($q) => $q
+                ->whereNull('completion_started_at')
+                ->orWhere('completion_started_at', '<', now()->subMinutes(self::COMPLETION_CLAIM_MINUTES)))
+            ->update(['completion_started_at' => now()]);
+
+        if ($claimed === 0) {
+            return false;
+        }
+
+        $envelope->refresh();
+
+        try {
+            $signedDocument = $this->closeOrderAndStore($envelope);
+        } catch (\Throwable $e) {
+            $this->releaseCompletionClaim($envelope);
+
+            // Samme fejl gentages typisk hver time, til nogen griber ind.
+            $envelope->reportBlockedOnce('completion_failed:' . $e::class . ':' . sha1($e->getMessage()), $e);
+
+            return false;
+        }
+
+        if ($signedDocument === false) {
+            $this->releaseCompletionClaim($envelope);
+
+            return false;
+        }
+
+        SigningEnvelope::query()
+            ->whereKey($envelope->getKey())
+            ->whereNull('completed_at')
+            ->update([
+                'status' => EnvelopeStatus::Completed->value,
+                'completed_at' => now(),
+                'signed_document' => $signedDocument,
+                'completion_started_at' => null,
+            ]);
+
+        $envelope->refresh();
+
         $envelope->logEvent(SigningEventType::EnvelopeCompleted);
 
-        // Every party is told the envelope is final — this mail is their only
+        // Every party is told the envelope is final: this mail is their only
         // notification of it, and viewers are attached precisely so they can
         // see the document. Who gets a *key* is decided in the notification:
         // only a party who actually signed receives a token link; everyone
         // else is pointed at the portal to identify themselves with MitID.
+        // Én fejlende mail må ikke stoppe resten: kuverten er fuldført og
+        // fuldføres ikke igen.
         foreach ($envelope->parties as $party) {
-            $party->notify(new EnvelopeCompletedNotification($envelope));
+            try {
+                $party->notify(new EnvelopeCompletedNotification($envelope));
+            } catch (\Throwable $e) {
+                report($e);
+            }
         }
 
-        // Also notify the creator
-        $this->notifyCreator($envelope, new EnvelopeCompletedNotification($envelope));
+        try {
+            $this->notifyCreator($envelope, new EnvelopeCompletedNotification($envelope));
+        } catch (\Throwable $e) {
+            report($e);
+        }
 
         return true;
     }
 
+    private function releaseCompletionClaim(SigningEnvelope $envelope): void
+    {
+        SigningEnvelope::query()
+            ->whereKey($envelope->getKey())
+            ->update(['completion_started_at' => null]);
+    }
+
     /**
-     * Luk ordren hos Idura, gem den signerede PDF og markér kuverten Completed.
+     * Luk ordren hos Idura og gem den signerede PDF. Skriver ikke kuvertens
+     * status; det gør completeEnvelope bagefter i én betinget skrivning.
      *
-     * Returnerer false (uden at kaste), hvis ordren hos Idura er CANCELLED
-     * eller EXPIRED: så kan den ikke fuldføres, og blokeringen er rapporteret.
+     * Returnerer stien til den gemte PDF (null hvis Idura ikke sendte en), eller
+     * false (uden at kaste) hvis ordren hos Idura er CANCELLED eller EXPIRED:
+     * så kan den ikke fuldføres, og blokeringen er rapporteret.
      */
-    private function closeOrderAndStore(SigningEnvelope $envelope): bool
+    private function closeOrderAndStore(SigningEnvelope $envelope): string|false|null
     {
         $retainDays = config('signing-room.defaults.retain_documents', 7);
         $orderId = $envelope->idura_signature_order_id;
@@ -477,7 +542,7 @@ class SigningRoomService
         if (in_array($iduraStatus, ['CANCELLED', 'EXPIRED'], true)) {
             // Ordren kan ikke lukkes. Prøv ikke closeSignatureOrder hver time;
             // rapportér én gang, hvad der skal gøres.
-            $envelope->reportBlockedOnce('idura_order_' . strtolower($iduraStatus), new EnvelopeOrderNotOpenException(
+            $envelope->reportBlockedOnce(self::orderNotOpenReason($iduraStatus), new EnvelopeOrderNotOpenException(
                 "Kuvert {$envelope->id} ({$envelope->uuid}): alle har underskrevet, men Idura-ordren {$orderId} er {$iduraStatus} "
                 . 'og kan ikke lukkes. Afgør manuelt, om kuverten skal sendes igen eller annulleres.'
             ), ['idura_status' => $iduraStatus]);
@@ -519,17 +584,19 @@ class SigningRoomService
                 );
             }
 
-            $envelope->update([
-                'signed_document' => $storagePath,
-            ]);
+            return $storagePath;
         }
 
-        $envelope->update([
-            'status' => EnvelopeStatus::Completed,
-            'completed_at' => now(),
-        ]);
+        return null;
+    }
 
-        return true;
+    /**
+     * Årsagsnøgle for en Idura-ordre, der ikke kan lukkes. Fælles for
+     * fuldførelsen og sync-jobbet, så samme blokering kun rapporteres én gang.
+     */
+    public static function orderNotOpenReason(string $iduraStatus): string
+    {
+        return 'idura_order_' . strtolower($iduraStatus);
     }
 
     private function isSigner(SigningParty $party): bool

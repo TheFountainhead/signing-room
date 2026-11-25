@@ -129,15 +129,27 @@ class SigningEnvelope extends Model
     }
 
     /**
-     * Kopimodtagere fra før rettelsen, der stadig er åbne hos Idura og
-     * forhindrer fuldførelse.
+     * Kopimodtagere i den aktuelle runde fra før rettelsen (25/11-2026), der
+     * stadig er åbne som SIGNER hos Idura og holder runden og ordren åben.
+     * I prod har kun kuvert 34 (annulleret) og 35 haft sådanne.
      */
     public function legacyBlockingViewers(): HasMany
     {
-        return $this->parties()
+        return $this->currentRoundParties()
             ->where('role', 'viewer')
             ->whereNotNull('idura_signatory_id')
             ->whereNot('status', 'signed');
+    }
+
+    /**
+     * Den aktuelle runde venter KUN på gamle kopimodtagere: ingen manglende
+     * underskrivere, men mindst én gammel kopimodtager.
+     */
+    public function isBlockedOnlyByLegacyViewers(): bool
+    {
+        $legacy = $this->legacyBlockingViewers()->count();
+
+        return $legacy > 0 && $this->unsignedBlockingCurrentRoundParties()->count() === $legacy;
     }
 
     private function unsignedBlockingParties(): HasMany

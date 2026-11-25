@@ -4,6 +4,7 @@ namespace Fountainhead\SigningRoom\Jobs;
 
 use Fountainhead\SigningRoom\Enums\EnvelopeStatus;
 use Fountainhead\SigningRoom\Exceptions\EnvelopeBlockedByViewerException;
+use Fountainhead\SigningRoom\Exceptions\EnvelopeOrderNotOpenException;
 use Fountainhead\SigningRoom\Models\SigningEnvelope;
 use Fountainhead\SigningRoom\Services\IduraSignatureService;
 use Fountainhead\SigningRoom\Services\SigningRoomService;
@@ -61,13 +62,28 @@ class SyncIduraSignatureStatus implements ShouldQueue
             }
 
             if ($iduraSignatory['status'] === 'SIGNED' && $party->status->value !== 'signed') {
-                $service->handleSigned($party, ['synced_from_polling' => true]);
-                $handledSignature = true;
+                // Kun et ægte claim tæller: har en webhook netop taget
+                // underskriften, har den også selv forsøgt fuldførelsen.
+                if ($service->handleSigned($party, ['synced_from_polling' => true])) {
+                    $handledSignature = true;
+                }
             }
         }
 
         if ($order['status'] === 'EXPIRED' && $envelope->status !== EnvelopeStatus::Expired) {
             $envelope->update(['status' => EnvelopeStatus::Expired]);
+
+            return;
+        }
+
+        // Annulleret hos Idura (eller en anden status, hvor ordren hverken er
+        // åben eller lukket af os): hverken rundeskift, mails eller
+        // lukkeforsøg. Én rapport med handlingen.
+        if (! in_array($order['status'], ['OPEN', 'CLOSED'], true)) {
+            $envelope->reportBlockedOnce(SigningRoomService::orderNotOpenReason($order['status']), new EnvelopeOrderNotOpenException(
+                "Kuvert {$envelope->id} ({$envelope->uuid}): Idura-ordren {$envelope->idura_signature_order_id} er {$order['status']}, "
+                . 'men kuverten er stadig åben her. Afgør manuelt, om den skal annulleres eller sendes igen.'
+            ), ['idura_status' => $order['status']]);
 
             return;
         }
@@ -121,25 +137,23 @@ class SyncIduraSignatureStatus implements ShouldQueue
      * Den aktuelle runde blokeres KUN af kopimodtagere fra før 25/11-2026, som
      * stadig er åbne som SIGNER hos Idura. Så kan runden (og ordren) aldrig
      * gøres færdig, og det kræver en manuel handling. Rapporteres én gang pr.
-     * kuvert, ikke hver time.
+     * kuvert og sæt af signatories, ikke hver time.
      */
     private function reportLegacyViewerBlockOnce(SigningEnvelope $envelope): void
     {
-        $blocking = $envelope->unsignedBlockingCurrentRoundParties()->get();
-
-        $onlyLegacyViewers = $blocking->isNotEmpty()
-            && $blocking->every(fn ($party) => $party->role === 'viewer' && $party->idura_signatory_id !== null);
-
-        if (! $onlyLegacyViewers) {
+        if (! $envelope->isBlockedOnlyByLegacyViewers()) {
             return;
         }
 
-        $envelope->reportBlockedOnce('legacy_viewer_signatory', new EnvelopeBlockedByViewerException(
+        $viewers = $envelope->legacyBlockingViewers()->orderBy('idura_signatory_id')->get();
+        $signatoryIds = $viewers->pluck('idura_signatory_id');
+
+        $envelope->reportBlockedOnce('legacy_viewer_signatory:' . $signatoryIds->implode(','), new EnvelopeBlockedByViewerException(
             "Kuvert {$envelope->id} ({$envelope->uuid}): slet viewer-signatory "
-            . $blocking->pluck('idura_signatory_id')->implode(', ')
+            . $signatoryIds->implode(', ')
             . " hos Idura (ordre {$envelope->idura_signature_order_id}), og sæt derefter idura_signatory_id = NULL "
-            . 'på kopimodtagerens part (id ' . $blocking->pluck('id')->implode(', ') . '). '
+            . 'på kopimodtagerens part (id ' . $viewers->pluck('id')->implode(', ') . '). '
             . "Runde {$envelope->current_round} venter kun på kopimodtageren, som Idura har som åben SIGNER."
-        ), ['idura_signatory_ids' => $blocking->pluck('idura_signatory_id')->all()]);
+        ), ['idura_signatory_ids' => $signatoryIds->all()]);
     }
 }

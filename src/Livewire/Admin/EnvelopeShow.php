@@ -31,8 +31,7 @@ class EnvelopeShow extends Component
 
         try {
             $service->sendEnvelope($this->signingEnvelope);
-        } catch (\InvalidArgumentException $e) {
-            // Fx en kladde uden underskrivere.
+        } catch (\Fountainhead\SigningRoom\Exceptions\EnvelopeHasNoSignerException $e) {
             session()->flash('error', $e->getMessage());
 
             return;

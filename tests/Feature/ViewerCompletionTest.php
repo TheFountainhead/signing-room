@@ -319,8 +319,9 @@ class ViewerCompletionTest extends TestCase
                 parties: [['name' => 'Kopi', 'email' => 'viewer@example.com', 'role' => SigningPartyRole::Viewer->value]],
             );
             $this->fail('createEnvelope skal afvise en kuvert uden underskrivere.');
-        } catch (\InvalidArgumentException $e) {
+        } catch (\Fountainhead\SigningRoom\Exceptions\EnvelopeHasNoSignerException $e) {
             $this->assertSame('En kuvert skal have mindst én underskriver.', $e->getMessage());
+            $this->assertInstanceOf(\InvalidArgumentException::class, $e, 'Bagudkompatibel for hosts, der fanger InvalidArgumentException.');
         }
 
         // En kuvert der alligevel findes (fx oprettet før denne regel).
@@ -340,7 +341,7 @@ class ViewerCompletionTest extends TestCase
         try {
             $this->service->sendEnvelope($envelope);
             $this->fail('sendEnvelope skal afvise en kuvert uden underskrivere.');
-        } catch (\InvalidArgumentException) {
+        } catch (\Fountainhead\SigningRoom\Exceptions\EnvelopeHasNoSignerException) {
         }
 
         (new SyncIduraSignatureStatus)->handle($this->idura, $this->service);
@@ -734,5 +735,246 @@ class ViewerCompletionTest extends TestCase
         $this->assertSame('En kuvert skal have mindst én underskriver.', session('error'));
         $this->assertNull(session('success'));
         $this->assertEquals(EnvelopeStatus::Draft, $envelope->fresh()->status);
+    }
+
+    private function addLegacyViewer(SigningEnvelope $envelope, string $email): string
+    {
+        $viewer = $this->party($envelope, $email);
+        $this->idura->addSignatories('SignatureOrder:fake', [[
+            'reference' => $viewer->uuid,
+            'signatory_role' => 'SIGNER',
+            'signing_sequence' => $viewer->signing_round,
+        ]]);
+        $id = array_key_last($this->idura->signatories);
+        $viewer->update(['idura_signatory_id' => $id]);
+
+        return $id;
+    }
+
+    private function sync(): void
+    {
+        (new SyncIduraSignatureStatus)->handle($this->idura, $this->service);
+    }
+
+    #[Test]
+    public function a_second_legacy_viewer_in_a_later_round_is_reported_too(): void
+    {
+        Exceptions::fake();
+
+        $envelope = $this->sentEnvelope([
+            ['name' => 'R1', 'email' => 'r1@example.com', 'signing_round' => 1],
+            ['name' => 'Kopi 1', 'email' => 'v1@example.com', 'role' => SigningPartyRole::Viewer->value, 'signing_round' => 1],
+            ['name' => 'R2', 'email' => 'r2@example.com', 'signing_round' => 2],
+            ['name' => 'Kopi 2', 'email' => 'v2@example.com', 'role' => SigningPartyRole::Viewer->value, 'signing_round' => 2],
+        ]);
+        $first = $this->addLegacyViewer($envelope, 'v1@example.com');
+        $second = $this->addLegacyViewer($envelope, 'v2@example.com');
+
+        $this->sign($this->party($envelope, 'r1@example.com'));
+        $this->sync();
+
+        // Første blokering løses manuelt.
+        unset($this->idura->signatories[$first]);
+        $this->party($envelope, 'v1@example.com')->update(['idura_signatory_id' => null]);
+        $this->sync();
+        $this->assertSame(2, $envelope->fresh()->current_round);
+
+        $this->sign($this->party($envelope, 'r2@example.com'));
+        $this->sync();
+        $this->sync();
+
+        Exceptions::assertReportedCount(2);
+        Exceptions::assertReported(fn (\Fountainhead\SigningRoom\Exceptions\EnvelopeBlockedByViewerException $e) => str_contains($e->getMessage(), "slet viewer-signatory {$second} hos Idura"));
+    }
+
+    #[Test]
+    public function a_cancelled_idura_order_stops_the_sync_before_any_round_is_advanced(): void
+    {
+        Exceptions::fake();
+
+        $envelope = $this->sentEnvelope([
+            ['name' => 'R1', 'email' => 'r1@example.com', 'signing_round' => 1],
+            ['name' => 'R2', 'email' => 'r2@example.com', 'signing_round' => 2],
+        ]);
+
+        // R1 er claimet, men runden blev aldrig rykket; imens er ordren
+        // annulleret hos Idura.
+        $r1 = $this->party($envelope, 'r1@example.com');
+        $r1->update(['status' => SigningPartyStatus::Signed, 'signed_at' => now()]);
+        $this->idura->orderStatus = 'CANCELLED';
+
+        $this->sync();
+        $this->sync();
+
+        $this->assertSame(1, $envelope->fresh()->current_round);
+        Notification::assertNotSentTo($this->party($envelope, 'r2@example.com'), DocumentReadyNotification::class);
+        Exceptions::assertReportedCount(1);
+        Exceptions::assertReported(fn (\Fountainhead\SigningRoom\Exceptions\EnvelopeOrderNotOpenException $e) => str_contains($e->getMessage(), 'er CANCELLED'));
+    }
+
+    #[Test]
+    public function completion_holds_no_transaction_during_the_idura_call_and_a_concurrent_attempt_backs_off(): void
+    {
+        $creator = $this->creator();
+        $envelope = $this->sentEnvelope([['name' => 'A', 'email' => 'a@example.com']], $creator->id);
+
+        $outside = \Illuminate\Support\Facades\DB::transactionLevel();
+        $levelDuringClose = null;
+        $concurrentResult = null;
+
+        $this->idura->duringClose = function () use (&$levelDuringClose, &$concurrentResult, $envelope) {
+            $levelDuringClose = \Illuminate\Support\Facades\DB::transactionLevel();
+            // En anden proces (sync) forsøger samtidig.
+            $concurrentResult = $this->service->completeEnvelope($envelope->fresh());
+        };
+
+        $this->sign($this->party($envelope, 'a@example.com'));
+
+        $this->assertSame($outside, $levelDuringClose, 'Ingen transaktion/lås må holdes under Idura-kaldet.');
+        $this->assertFalse($concurrentResult, 'Den samtidige proces skal trække sig.');
+        $this->assertSame(1, $this->idura->closeCalls);
+        $this->assertEquals(EnvelopeStatus::Completed, $envelope->fresh()->status);
+        $this->assertNull($envelope->fresh()->completion_started_at);
+        Notification::assertSentToTimes($this->party($envelope, 'a@example.com'), EnvelopeCompletedNotification::class, 1);
+        Notification::assertSentToTimes($creator, EnvelopeCompletedNotification::class, 1);
+    }
+
+    #[Test]
+    public function a_completion_claim_left_by_a_dead_process_is_taken_over_after_ten_minutes(): void
+    {
+        $envelope = $this->sentEnvelope([['name' => 'A', 'email' => 'a@example.com']]);
+        $a = $this->party($envelope, 'a@example.com');
+        $this->idura->markSigned($a->idura_signatory_id);
+        $a->update(['status' => SigningPartyStatus::Signed, 'signed_at' => now()]);
+
+        SigningEnvelope::whereKey($envelope->id)->update(['completion_started_at' => now()->subMinutes(2)]);
+        $this->sync();
+        $this->assertSame(0, $this->idura->closeCalls, 'En frisk claim må ikke overtages.');
+
+        SigningEnvelope::whereKey($envelope->id)->update(['completion_started_at' => now()->subMinutes(11)]);
+        $this->sync();
+
+        $this->assertSame(1, $this->idura->closeCalls);
+        $this->assertEquals(EnvelopeStatus::Completed, $envelope->fresh()->status);
+    }
+
+    #[Test]
+    public function the_creator_is_not_told_to_wait_for_all_signers_when_all_have_signed(): void
+    {
+        config(['signing-room.notifications.party_signed' => true]);
+        Exceptions::fake();
+
+        $creator = $this->creator();
+        $envelope = $this->sentEnvelope([
+            ['name' => 'A', 'email' => 'a@example.com'],
+            ['name' => 'B', 'email' => 'b@example.com'],
+            ['name' => 'Kopi', 'email' => 'viewer@example.com', 'role' => SigningPartyRole::Viewer->value],
+        ], $creator->id);
+        $this->addLegacyViewer($envelope, 'viewer@example.com');
+
+        $this->sign($this->party($envelope, 'a@example.com'));
+        $this->sign($this->party($envelope, 'b@example.com'));
+
+        // A: "1 af 2". B: alle underskrivere er færdige, men kuverten er
+        // blokeret af den gamle kopimodtager; ingen "du får besked"-mail.
+        Notification::assertSentToTimes($creator, PartySignedNotification::class, 1);
+        Notification::assertNotSentTo($creator, EnvelopeCompletedNotification::class);
+    }
+
+    #[Test]
+    public function one_failing_completion_mail_does_not_stop_the_others(): void
+    {
+        Exceptions::fake();
+
+        $creator = $this->creator();
+        $envelope = $this->sentEnvelope([
+            ['name' => 'A', 'email' => 'a@example.com'],
+            ['name' => 'B', 'email' => 'b@example.com'],
+        ], $creator->id);
+
+        $fake = Notification::getFacadeRoot();
+        Notification::swap(new class($fake) extends \Illuminate\Support\Testing\Fakes\NotificationFake {
+            public function __construct(private $inner) {}
+
+            public function send($notifiables, $notification)
+            {
+                $first = collect(\Illuminate\Support\Arr::wrap($notifiables))->first();
+                if ($notification instanceof EnvelopeCompletedNotification && ($first->email ?? null) === 'a@example.com') {
+                    throw new \RuntimeException('Mail til A fejlede');
+                }
+
+                $this->inner->send($notifiables, $notification);
+            }
+        });
+
+        $this->sign($this->party($envelope, 'a@example.com'));
+        $this->sign($this->party($envelope, 'b@example.com'));
+
+        Exceptions::assertReported(fn (\RuntimeException $e) => $e->getMessage() === 'Mail til A fejlede');
+        $fake->assertSentTo($this->party($envelope, 'b@example.com'), EnvelopeCompletedNotification::class);
+        $fake->assertSentTo($creator, EnvelopeCompletedNotification::class);
+        $this->assertEquals(EnvelopeStatus::Completed, $envelope->fresh()->status);
+    }
+
+    #[Test]
+    public function a_failing_close_is_reported_once_not_every_hour(): void
+    {
+        Exceptions::fake();
+
+        $envelope = $this->sentEnvelope([['name' => 'A', 'email' => 'a@example.com']]);
+        $this->idura->failNextCloses = 3;
+
+        $this->sign($this->party($envelope, 'a@example.com'));
+        $this->sync();
+        $this->sync();
+
+        $this->assertSame(3, $this->idura->closeCalls);
+        Exceptions::assertReportedCount(1);
+        $this->assertNull($envelope->fresh()->completion_started_at, 'Claimet frigives efter en fejl.');
+
+        $this->sync();
+        $this->assertEquals(EnvelopeStatus::Completed, $envelope->fresh()->status);
+    }
+
+    #[Test]
+    public function the_sync_job_still_completes_when_a_webhook_claimed_the_signature_first(): void
+    {
+        $envelope = $this->sentEnvelope([['name' => 'A', 'email' => 'a@example.com']]);
+        $a = $this->party($envelope, 'a@example.com');
+        $this->idura->markSigned($a->idura_signatory_id);
+
+        // Webhooken når at claime (og dø før fuldførelsen) mellem sync-jobbets
+        // opslag af parten og dets eget handleSigned-kald.
+        $service = \Mockery::mock(SigningRoomService::class, [$this->idura])->makePartial();
+        $service->shouldReceive('handleSigned')->once()->andReturnUsing(function (SigningParty $party) {
+            $party->update(['status' => SigningPartyStatus::Signed, 'signed_at' => now()]);
+
+            return false;
+        });
+
+        (new SyncIduraSignatureStatus)->handle($this->idura, $service);
+
+        $this->assertSame(1, $this->idura->closeCalls);
+        $this->assertEquals(EnvelopeStatus::Completed, $envelope->fresh()->status);
+    }
+
+    #[Test]
+    public function a_legacy_viewer_is_not_reported_while_a_signer_in_the_same_round_is_still_missing(): void
+    {
+        Exceptions::fake();
+
+        $envelope = $this->sentEnvelope([
+            ['name' => 'A', 'email' => 'a@example.com'],
+            ['name' => 'B', 'email' => 'b@example.com'],
+            ['name' => 'Kopi', 'email' => 'viewer@example.com', 'role' => SigningPartyRole::Viewer->value],
+        ]);
+        $this->addLegacyViewer($envelope, 'viewer@example.com');
+
+        $this->sign($this->party($envelope, 'a@example.com'));
+        $this->sync();
+
+        // Runden venter også på B: det er ikke en blokering, der kræver handling.
+        Exceptions::assertNothingReported();
+        $this->assertSame(0, $envelope->events()->where('event_type', 'envelope.blocked')->count());
     }
 }
