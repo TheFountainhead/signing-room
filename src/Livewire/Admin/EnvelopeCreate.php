@@ -68,6 +68,21 @@ class EnvelopeCreate extends Component
         }
     }
 
+    /**
+     * En kuvert med kun kopimodtagere kan aldrig underskrives.
+     */
+    private function hasSigner(): bool
+    {
+        $hasSigner = collect($this->allParties())
+            ->contains(fn (array $party) => ($party['role'] ?? 'signer') === 'signer');
+
+        if (! $hasSigner) {
+            $this->addError('parties', 'Tilføj mindst én underskriver.');
+        }
+
+        return $hasSigner;
+    }
+
     private function allParties(): array
     {
         $parties = $this->parties;
@@ -100,6 +115,10 @@ class EnvelopeCreate extends Component
             // File upload expired or other filesystem error during validation
             $this->addError('document', 'Filen er udløbet. Upload venligst PDF-dokumentet igen.');
 
+            return;
+        }
+
+        if (! $this->hasSigner()) {
             return;
         }
 
@@ -166,6 +185,10 @@ class EnvelopeCreate extends Component
     public function saveDraft(): void
     {
         $this->validate();
+
+        if (! $this->hasSigner()) {
+            return;
+        }
 
         $path = $this->document->store(
             config('signing-room.storage.path', 'signing-room'),

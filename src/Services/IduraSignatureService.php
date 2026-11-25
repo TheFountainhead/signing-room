@@ -271,6 +271,35 @@ GRAPHQL;
     }
 
     /**
+     * Hent dokumenterne inkl. blob for en ordre, der allerede er lukket.
+     *
+     * Bruges når closeSignatureOrder lykkedes, men lagringen af PDF'en fejlede.
+     * Idura beholder dokumenterne i retainDocumentsForDays dage efter lukning
+     * (vi sender retain_documents, default 7), så et nyt forsøg skal hente
+     * dem her i stedet for at kalde closeSignatureOrder igen.
+     */
+    public function getOrderDocuments(string $orderId): array
+    {
+        $query = <<<'GRAPHQL'
+query GetSignatureOrderDocuments($id: ID!) {
+    signatureOrder(id: $id) {
+        id
+        status
+        documents {
+            id
+            title
+            blob
+        }
+    }
+}
+GRAPHQL;
+
+        $result = $this->query($query, ['id' => $orderId]);
+
+        return $result['signatureOrder'];
+    }
+
+    /**
      * Fetch signatory evidence (identity claims) after signing.
      *
      * Returns the full CPR number from MitID evidence, or null if unavailable.

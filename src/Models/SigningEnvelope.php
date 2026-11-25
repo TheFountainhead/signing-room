@@ -54,19 +54,27 @@ class SigningEnvelope extends Model
 
     public function isCurrentRoundComplete(): bool
     {
-        // Kun underskrivere afgør om runden er færdig. En kopimodtager
-        // underskriver aldrig og ville ellers holde runden åben for evigt.
+        // Kun parter der kan blokere hos Idura afgør, om runden er færdig: alle
+        // underskrivere, og kopimodtagere der har et Idura-id. De sidste findes
+        // kun i kuverter sendt før 25/11-2026, hvor kopimodtagere blev oprettet
+        // hos Idura som SIGNER; Iduras signingSequence venter på dem, så runden
+        // er reelt ikke færdig. Nye kopimodtagere har intet Idura-id og
+        // blokerer ikke.
         return $this->unsignedCurrentRoundParties()
-            ->where('role', 'signer')
+            ->where(fn ($query) => $query
+                ->where('role', 'signer')
+                ->orWhereNotNull('idura_signatory_id'))
             ->doesntExist();
     }
 
     public function isAllRoundsComplete(): bool
     {
-        return $this->parties()
-            ->where('role', 'signer')
-            ->whereNot('status', 'signed')
-            ->doesntExist();
+        // Mindst én underskriver: en kuvert med kun kopimodtagere må aldrig
+        // regnes for underskrevet.
+        $signers = $this->parties()->where('role', 'signer');
+
+        return (clone $signers)->exists()
+            && (clone $signers)->whereNot('status', 'signed')->doesntExist();
     }
 
     public function logEvent(

@@ -21,7 +21,25 @@ class PartySignedNotification extends Notification implements ShouldQueue
     public function __construct(
         public SigningEnvelope $envelope,
         public SigningParty $signedParty,
+        public int $signedCount,
+        public int $signerCount,
     ) {}
+
+    /**
+     * Tæl underskrifterne nu, ved underskriften, ikke når mailen renderes i
+     * køen: så viser mailen det antal der gjaldt, da netop denne part skrev under.
+     */
+    public static function forParty(SigningEnvelope $envelope, SigningParty $party): self
+    {
+        $signers = $envelope->parties()->where('role', 'signer');
+
+        return new self(
+            $envelope,
+            $party,
+            (clone $signers)->where('status', 'signed')->count(),
+            (clone $signers)->count(),
+        );
+    }
 
     public function via($notifiable): array
     {
@@ -32,17 +50,13 @@ class PartySignedNotification extends Notification implements ShouldQueue
     {
         $adminUrl = route('signing-room.admin.show', $this->envelope);
 
-        $signers = $this->envelope->parties()->where('role', 'signer');
-        $total = (clone $signers)->count();
-        $signed = (clone $signers)->where('status', 'signed')->count();
-
         $mail = (new MailMessage)
             ->subject('Underskrevet af ' . $this->signedParty->name . ': ' . $this->envelope->title)
             ->view('signing-room::emails.party-signed', [
                 'envelope' => $this->envelope,
                 'signedParty' => $this->signedParty,
-                'signedCount' => $signed,
-                'signerCount' => $total,
+                'signedCount' => $this->signedCount,
+                'signerCount' => $this->signerCount,
                 'adminUrl' => $adminUrl,
             ]);
 

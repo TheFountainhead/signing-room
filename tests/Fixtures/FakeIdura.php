@@ -24,6 +24,11 @@ class FakeIdura extends IduraSignatureService
 
     public int $failNextCloses = 0;
 
+    /** Blob Idura still holds after close (null = retention expired). */
+    public ?string $retainedBlob = '%PDF-1.4 signeret';
+
+    public int $documentFetches = 0;
+
     public function __construct() {}
 
     public function isConfigured(): bool
@@ -73,6 +78,10 @@ class FakeIdura extends IduraSignatureService
     {
         $this->closeCalls++;
 
+        if ($this->orderStatus !== 'OPEN') {
+            throw new RuntimeException('Idura GraphQL errors: Signature order is not open');
+        }
+
         if ($this->failNextCloses > 0) {
             $this->failNextCloses--;
             throw new RuntimeException('Idura API request failed with status 503: unavailable');
@@ -101,6 +110,17 @@ class FakeIdura extends IduraSignatureService
             'status' => $this->orderStatus,
             'signatories' => array_values($this->signatories),
             'documents' => [],
+        ];
+    }
+
+    public function getOrderDocuments(string $orderId): array
+    {
+        $this->documentFetches++;
+
+        return [
+            'id' => $orderId,
+            'status' => $this->orderStatus,
+            'documents' => [['id' => 'Document:1', 'title' => 'x', 'blob' => $this->retainedBlob === null ? null : base64_encode($this->retainedBlob)]],
         ];
     }
 
