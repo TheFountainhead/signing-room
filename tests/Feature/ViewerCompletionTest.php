@@ -977,4 +977,24 @@ class ViewerCompletionTest extends TestCase
         Exceptions::assertNothingReported();
         $this->assertSame(0, $envelope->events()->where('event_type', 'envelope.blocked')->count());
     }
+
+    #[Test]
+    public function the_party_signed_switch_reads_the_env_value_as_a_boolean(): void
+    {
+        $saved = getenv('SIGNING_ROOM_NOTIFY_PARTY_SIGNED');
+
+        try {
+            foreach (['no' => false, 'off' => false, '0' => false, 'yes' => true, '1' => true, 'true' => true] as $raw => $expected) {
+                putenv("SIGNING_ROOM_NOTIFY_PARTY_SIGNED={$raw}");
+                $config = require __DIR__ . '/../../config/signing-room.php';
+                $this->assertSame($expected, $config['notifications']['party_signed'], "SIGNING_ROOM_NOTIFY_PARTY_SIGNED={$raw}");
+            }
+
+            putenv('SIGNING_ROOM_NOTIFY_PARTY_SIGNED');
+            $config = require __DIR__ . '/../../config/signing-room.php';
+            $this->assertFalse($config['notifications']['party_signed']);
+        } finally {
+            putenv($saved === false ? 'SIGNING_ROOM_NOTIFY_PARTY_SIGNED' : "SIGNING_ROOM_NOTIFY_PARTY_SIGNED={$saved}");
+        }
+    }
 }

@@ -54,7 +54,7 @@ return [
         // lytter på PartySignedEvent (Frankston-master og dannebrog-v1 via
         // App\Listeners\NotifyAdminOnSignature) ellers sender to mails.
         // Slå til på hosts uden egen listener (sign.frankston.io).
-        'party_signed' => env('SIGNING_ROOM_NOTIFY_PARTY_SIGNED', false),
+        'party_signed' => filter_var(env('SIGNING_ROOM_NOTIFY_PARTY_SIGNED', false), FILTER_VALIDATE_BOOLEAN),
     ],
 
     // Callable that resolves branding for a given user_id.
