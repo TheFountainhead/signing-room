@@ -31,6 +31,12 @@
         </div>
     @endif
 
+    @if(session('error'))
+        <div style="background: #FFEBEE; color: #CC0000; padding: 16px; border-radius: 8px; margin-bottom: 24px;">
+            {{ session('error') }}
+        </div>
+    @endif
+
     @if(session('warning'))
         <div style="background: #FFF8E1; color: #F57F17; padding: 16px; border-radius: 8px; margin-bottom: 24px; border: 1px solid #FFE082;">
             {{ session('warning') }}

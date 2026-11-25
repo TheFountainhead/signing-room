@@ -13,6 +13,7 @@ use Fountainhead\SigningRoom\Notifications\EnvelopeCompletedNotification;
 use Fountainhead\SigningRoom\Notifications\PartyRejectedNotification;
 use Fountainhead\SigningRoom\Notifications\PartySignedNotification;
 use Fountainhead\SigningRoom\Events\PartySignedEvent;
+use Fountainhead\SigningRoom\Exceptions\EnvelopeOrderNotOpenException;
 use Fountainhead\SigningRoom\Exceptions\SignedDocumentUnavailableException;
 use InvalidArgumentException;
 use Illuminate\Support\Facades\DB;
@@ -190,20 +191,9 @@ class SigningRoomService
         $party->refresh();
         $party->update(['signature_data' => $signatureData]);
 
-        // Fetch and store CPR from Idura evidence
-        if ($party->idura_signatory_id) {
-            $cpr = $this->idura->getSignatoryEvidence($party->idura_signatory_id);
-            if ($cpr) {
-                $party->cpr = $cpr;
-                $party->save();
-            }
-        }
+        $this->recordSignature($party);
 
         $envelope = $party->envelope;
-
-        $envelope->logEvent(SigningEventType::PartySigned, $party);
-
-        PartySignedEvent::dispatch($envelope, $party);
 
         if ($envelope->isAllRoundsComplete()) {
             // Underskriften er gemt. Fejler fuldførelsen (Idura, disk), skal
@@ -223,9 +213,16 @@ class SigningRoomService
         if ($envelope->isCurrentRoundComplete()) {
             $this->advanceRound($envelope);
         } else {
-            $envelope->update([
-                'status' => EnvelopeStatus::PartiallySigned,
-            ]);
+            // Betinget: en samtidig webhook kan lige have fuldført kuverten.
+            // En ubetinget skrivning ville sætte Completed tilbage til
+            // PartiallySigned, og sync ville så fuldføre (og maile) igen.
+            SigningEnvelope::query()
+                ->whereKey($envelope->getKey())
+                ->whereIn('status', [EnvelopeStatus::Sent->value, EnvelopeStatus::PartiallySigned->value])
+                ->whereNull('completed_at')
+                ->update(['status' => EnvelopeStatus::PartiallySigned->value]);
+
+            $envelope->refresh();
         }
 
         // Først når kuvertens tilstand er opdateret: en fejlende mail må ikke
@@ -238,6 +235,47 @@ class SigningRoomService
                 report($e);
             }
         }
+    }
+
+    /**
+     * Det der følger efter selve claimet af en underskrift: CPR fra Idura,
+     * party.signed-event og PartySignedEvent.
+     *
+     * Idempotent: gør intet, hvis party.signed-eventet allerede findes for
+     * parten. Kaldes af handleSigned og af SyncIduraSignatureStatus for parter,
+     * der blev claimet, men hvor dette trin aldrig blev fuldført.
+     */
+    public function recordSignature(SigningParty $party): void
+    {
+        $envelope = $party->envelope;
+
+        $alreadyRecorded = $envelope->events()
+            ->where('event_type', SigningEventType::PartySigned->value)
+            ->where('signing_party_id', $party->getKey())
+            ->exists();
+
+        if ($alreadyRecorded) {
+            return;
+        }
+
+        // CPR er bevis, ikke en forudsætning for underskriften. Fejler Idura
+        // her (fx 503), må event og rundeskift ikke gå tabt; CPR kan hentes
+        // senere med signing-room:backfill-cpr.
+        if ($party->idura_signatory_id && $party->cpr_hash === null) {
+            try {
+                $cpr = $this->idura->getSignatoryEvidence($party->idura_signatory_id);
+                if ($cpr) {
+                    $party->cpr = $cpr;
+                    $party->save();
+                }
+            } catch (\Throwable $e) {
+                report($e);
+            }
+        }
+
+        $envelope->logEvent(SigningEventType::PartySigned, $party);
+
+        PartySignedEvent::dispatch($envelope, $party);
     }
 
     /**
@@ -378,15 +416,25 @@ class SigningRoomService
                 ->lockForUpdate()
                 ->first();
 
-            if (! $locked
-                || $locked->status === EnvelopeStatus::Completed
-                || ! $locked->isAllRoundsComplete()) {
+            if (! $locked) {
                 return false;
             }
 
-            $this->closeOrderAndStore($locked);
+            if ($locked->isCompleted()) {
+                // Allerede fuldført. Har en samtidig webhook overskrevet
+                // status, rettes den tilbage, uden nye mails.
+                if ($locked->status !== EnvelopeStatus::Completed) {
+                    $locked->update(['status' => EnvelopeStatus::Completed]);
+                }
 
-            return true;
+                return false;
+            }
+
+            if (! $locked->isAllRoundsComplete()) {
+                return false;
+            }
+
+            return $this->closeOrderAndStore($locked);
         });
 
         $envelope->refresh();
@@ -414,15 +462,30 @@ class SigningRoomService
 
     /**
      * Luk ordren hos Idura, gem den signerede PDF og markér kuverten Completed.
+     *
+     * Returnerer false (uden at kaste), hvis ordren hos Idura er CANCELLED
+     * eller EXPIRED: så kan den ikke fuldføres, og blokeringen er rapporteret.
      */
-    private function closeOrderAndStore(SigningEnvelope $envelope): void
+    private function closeOrderAndStore(SigningEnvelope $envelope): bool
     {
         $retainDays = config('signing-room.defaults.retain_documents', 7);
         $orderId = $envelope->idura_signature_order_id;
 
         $current = $this->idura->getOrderStatus($orderId);
+        $iduraStatus = $current['status'] ?? null;
 
-        if (($current['status'] ?? null) === 'CLOSED') {
+        if (in_array($iduraStatus, ['CANCELLED', 'EXPIRED'], true)) {
+            // Ordren kan ikke lukkes. Prøv ikke closeSignatureOrder hver time;
+            // rapportér én gang, hvad der skal gøres.
+            $envelope->reportBlockedOnce('idura_order_' . strtolower($iduraStatus), new EnvelopeOrderNotOpenException(
+                "Kuvert {$envelope->id} ({$envelope->uuid}): alle har underskrevet, men Idura-ordren {$orderId} er {$iduraStatus} "
+                . 'og kan ikke lukkes. Afgør manuelt, om kuverten skal sendes igen eller annulleres.'
+            ), ['idura_status' => $iduraStatus]);
+
+            return false;
+        }
+
+        if ($iduraStatus === 'CLOSED') {
             // Et tidligere forsøg lukkede ordren, men fik ikke gemt PDF'en.
             // closeSignatureOrder igen ville fejle; hent i stedet dokumentet,
             // som Idura beholder i retain_documents dage efter lukning.
@@ -465,6 +528,8 @@ class SigningRoomService
             'status' => EnvelopeStatus::Completed,
             'completed_at' => now(),
         ]);
+
+        return true;
     }
 
     private function isSigner(SigningParty $party): bool

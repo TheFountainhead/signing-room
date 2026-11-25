@@ -29,6 +29,8 @@ class FakeIdura extends IduraSignatureService
 
     public int $documentFetches = 0;
 
+    public bool $failEvidence = false;
+
     public function __construct() {}
 
     public function isConfigured(): bool
@@ -126,6 +128,10 @@ class FakeIdura extends IduraSignatureService
 
     public function getSignatoryEvidence(string $signatoryId): ?string
     {
+        if ($this->failEvidence) {
+            throw new RuntimeException('Idura API request failed: evidence 503');
+        }
+
         return null;
     }
 }

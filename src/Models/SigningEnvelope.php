@@ -69,9 +69,55 @@ class SigningEnvelope extends Model
             ->orWhereNotNull('idura_signatory_id'));
     }
 
+    /**
+     * Blokerende parter i den aktuelle runde, der ikke har underskrevet.
+     * En afvist eller fejlet part tæller med: runden er ikke færdig, fordi
+     * nogen har afvist, og næste runde må ikke få mails.
+     */
+    public function unsignedBlockingCurrentRoundParties(): HasMany
+    {
+        return self::onlyBlocking($this->currentRoundParties())->whereNot('status', 'signed');
+    }
+
     public function isCurrentRoundComplete(): bool
     {
-        return self::onlyBlocking($this->unsignedCurrentRoundParties())->doesntExist();
+        return $this->unsignedBlockingCurrentRoundParties()->doesntExist();
+    }
+
+    /**
+     * Kuverten er reelt fuldført: status, tidspunkt eller gemt PDF. Status kan
+     * være overskrevet af en samtidig webhook; de to andre felter skrives kun
+     * af fuldførelsen.
+     */
+    public function isCompleted(): bool
+    {
+        return $this->status === EnvelopeStatus::Completed
+            || $this->completed_at !== null
+            || $this->signed_document !== null;
+    }
+
+    /**
+     * Rapportér en blokering, der kræver manuel handling, én gang pr. kuvert og
+     * årsag (markeret med et envelope.blocked-event), ikke ved hver kørsel.
+     *
+     * Returnerer true hvis den blev rapporteret nu.
+     */
+    public function reportBlockedOnce(string $reason, \Throwable $exception, array $metadata = []): bool
+    {
+        $alreadyReported = $this->events()
+            ->where('event_type', SigningEventType::EnvelopeBlocked->value)
+            ->get()
+            ->contains(fn (SigningEvent $event) => ($event->metadata['reason'] ?? null) === $reason);
+
+        if ($alreadyReported) {
+            return false;
+        }
+
+        $this->logEvent(SigningEventType::EnvelopeBlocked, metadata: ['reason' => $reason] + $metadata);
+
+        report($exception);
+
+        return true;
     }
 
     public function isAllRoundsComplete(): bool

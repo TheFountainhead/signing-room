@@ -28,7 +28,15 @@ class EnvelopeShow extends Component
     public function sendEnvelope(): void
     {
         $service = app(SigningRoomService::class);
-        $service->sendEnvelope($this->signingEnvelope);
+
+        try {
+            $service->sendEnvelope($this->signingEnvelope);
+        } catch (\InvalidArgumentException $e) {
+            // Fx en kladde uden underskrivere.
+            session()->flash('error', $e->getMessage());
+
+            return;
+        }
 
         session()->flash('success', 'Dokumentet er sendt til underskrift.');
         $this->signingEnvelope->refresh();
