@@ -52,29 +52,51 @@ class SigningEnvelope extends Model
             ->whereNotIn('status', ['signed', 'rejected']);
     }
 
+    /**
+     * Parter der skal have underskrevet, før en runde eller kuverten er færdig:
+     * alle underskrivere, og kopimodtagere der har et Idura-id.
+     *
+     * De sidste findes kun i kuverter sendt før 25/11-2026, hvor kopimodtagere
+     * blev oprettet hos Idura som SIGNER. Idura venter på dem, både i
+     * signingSequence og i closeSignatureOrder ("open signatory"). Nye
+     * kopimodtagere har intet Idura-id og blokerer ikke. Samme regel bruges
+     * for runde og fuldførelse, så de to aldrig er uenige.
+     */
+    private static function onlyBlocking(HasMany $parties): HasMany
+    {
+        return $parties->where(fn ($q) => $q
+            ->where('role', 'signer')
+            ->orWhereNotNull('idura_signatory_id'));
+    }
+
     public function isCurrentRoundComplete(): bool
     {
-        // Kun parter der kan blokere hos Idura afgør, om runden er færdig: alle
-        // underskrivere, og kopimodtagere der har et Idura-id. De sidste findes
-        // kun i kuverter sendt før 25/11-2026, hvor kopimodtagere blev oprettet
-        // hos Idura som SIGNER; Iduras signingSequence venter på dem, så runden
-        // er reelt ikke færdig. Nye kopimodtagere har intet Idura-id og
-        // blokerer ikke.
-        return $this->unsignedCurrentRoundParties()
-            ->where(fn ($query) => $query
-                ->where('role', 'signer')
-                ->orWhereNotNull('idura_signatory_id'))
-            ->doesntExist();
+        return self::onlyBlocking($this->unsignedCurrentRoundParties())->doesntExist();
     }
 
     public function isAllRoundsComplete(): bool
     {
         // Mindst én underskriver: en kuvert med kun kopimodtagere må aldrig
         // regnes for underskrevet.
-        $signers = $this->parties()->where('role', 'signer');
+        return $this->parties()->where('role', 'signer')->exists()
+            && $this->unsignedBlockingParties()->doesntExist();
+    }
 
-        return (clone $signers)->exists()
-            && (clone $signers)->whereNot('status', 'signed')->doesntExist();
+    /**
+     * Kopimodtagere fra før rettelsen, der stadig er åbne hos Idura og
+     * forhindrer fuldførelse.
+     */
+    public function legacyBlockingViewers(): HasMany
+    {
+        return $this->parties()
+            ->where('role', 'viewer')
+            ->whereNotNull('idura_signatory_id')
+            ->whereNot('status', 'signed');
+    }
+
+    private function unsignedBlockingParties(): HasMany
+    {
+        return self::onlyBlocking($this->parties())->whereNot('status', 'signed');
     }
 
     public function logEvent(

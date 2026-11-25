@@ -3,6 +3,8 @@
 namespace Fountainhead\SigningRoom\Jobs;
 
 use Fountainhead\SigningRoom\Enums\EnvelopeStatus;
+use Fountainhead\SigningRoom\Enums\SigningEventType;
+use Fountainhead\SigningRoom\Exceptions\EnvelopeBlockedByViewerException;
 use Fountainhead\SigningRoom\Models\SigningEnvelope;
 use Fountainhead\SigningRoom\Services\IduraSignatureService;
 use Fountainhead\SigningRoom\Services\SigningRoomService;
@@ -69,15 +71,72 @@ class SyncIduraSignatureStatus implements ShouldQueue
             return;
         }
 
-        // Alle underskrivere har underskrevet, men kuverten blev aldrig
-        // fuldført (fx fordi closeOrder fejlede). Prøv igen. handleSigned har
-        // allerede forsøgt i denne kørsel, hvis den lige blev kaldt.
         $envelope->refresh();
 
-        if (! $handledSignature
-            && $envelope->status !== EnvelopeStatus::Completed
-            && $envelope->isAllRoundsComplete()) {
-            $service->completeEnvelope($envelope);
+        if ($envelope->status === EnvelopeStatus::Completed) {
+            return;
         }
+
+        if ($envelope->isAllRoundsComplete()) {
+            // Alle har underskrevet, men kuverten blev aldrig fuldført (fx
+            // fordi closeOrder fejlede). Prøv igen. handleSigned har allerede
+            // forsøgt i denne kørsel, hvis den lige blev kaldt.
+            if (! $handledSignature) {
+                $service->completeEnvelope($envelope);
+            }
+
+            return;
+        }
+
+        // Runden er færdig, men blev aldrig rykket (fx fejlede noget efter
+        // underskriften). advanceRound er idempotent.
+        if ($envelope->isCurrentRoundComplete()) {
+            $service->advanceRound($envelope);
+
+            return;
+        }
+
+        $this->reportLegacyViewerBlockOnce($envelope);
+    }
+
+    /**
+     * Alle underskrivere har underskrevet, men en kopimodtager fra før
+     * 25/11-2026 er stadig åben som SIGNER hos Idura. Så kan ordren aldrig
+     * lukkes, og det kræver en manuel handling. Det rapporteres én gang pr.
+     * kuvert (markeret med et envelope.blocked-event), ikke hver time.
+     */
+    private function reportLegacyViewerBlockOnce(SigningEnvelope $envelope): void
+    {
+        $signersOutstanding = $envelope->parties()
+            ->where('role', 'signer')
+            ->whereNot('status', 'signed')
+            ->exists();
+
+        if ($signersOutstanding) {
+            return;
+        }
+
+        $viewers = $envelope->legacyBlockingViewers()->get();
+
+        if ($viewers->isEmpty()) {
+            return;
+        }
+
+        if ($envelope->events()->where('event_type', SigningEventType::EnvelopeBlocked->value)->exists()) {
+            return;
+        }
+
+        $envelope->logEvent(SigningEventType::EnvelopeBlocked, metadata: [
+            'reason' => 'legacy_viewer_signatory',
+            'idura_signatory_ids' => $viewers->pluck('idura_signatory_id')->all(),
+        ]);
+
+        report(new EnvelopeBlockedByViewerException(
+            "Kuvert {$envelope->id} ({$envelope->uuid}): slet viewer-signatory "
+            . $viewers->pluck('idura_signatory_id')->implode(', ')
+            . " hos Idura (ordre {$envelope->idura_signature_order_id}), og sæt derefter idura_signatory_id = NULL "
+            . "på kopimodtagerens part (id " . $viewers->pluck('id')->implode(', ') . "). "
+            . "Alle underskrivere har underskrevet, men Idura kan ikke lukke ordren, så længe kopimodtageren er åben som SIGNER."
+        ));
     }
 }

@@ -156,6 +156,13 @@ class SigningRoomService
         // Notify first-round parties
         $this->notifyRoundParties($envelope, 1);
 
+        // Første runde kan bestå af kopimodtagere alene (fx Frankston-masters
+        // sekventielle tilstand, hvor hver part får sin egen runde). Så går
+        // vi straks videre til den første runde med underskrivere.
+        if ($envelope->isCurrentRoundComplete() && ! $envelope->isAllRoundsComplete()) {
+            $this->advanceRound($envelope);
+        }
+
         return $envelope->fresh('parties');
     }
 
@@ -222,11 +229,14 @@ class SigningRoomService
         }
 
         // Først når kuvertens tilstand er opdateret: en fejlende mail må ikke
-        // efterlade kuverten uden rundeskift.
-        try {
-            $this->notifyCreator($envelope, PartySignedNotification::forParty($envelope, $party));
-        } catch (\Throwable $e) {
-            report($e);
+        // efterlade kuverten uden rundeskift. Slået fra som standard, se
+        // signing-room.notifications.party_signed.
+        if (config('signing-room.notifications.party_signed', false)) {
+            try {
+                $this->notifyCreator($envelope, PartySignedNotification::forParty($envelope, $party));
+            } catch (\Throwable $e) {
+                report($e);
+            }
         }
     }
 
@@ -310,30 +320,44 @@ class SigningRoomService
 
     /**
      * Advance to the next signing round.
+     *
+     * Public, så SyncIduraSignatureStatus kan rykke en runde, der blev
+     * efterladt urykket (fx hvis noget fejlede efter underskriften). Idempotent:
+     * rykker kun, når den nuværende runde faktisk er færdig, og kun én gang pr.
+     * runde, også ved samtidige kald.
+     *
+     * Runder uden parter der skal underskrive (kun kopimodtagere) springes
+     * over, så næste underskrivere får deres mail.
      */
-    private function advanceRound(SigningEnvelope $envelope): void
+    public function advanceRound(SigningEnvelope $envelope): void
     {
-        $currentRound = $envelope->current_round;
-        $nextRound = $currentRound + 1;
+        $lastRound = (int) $envelope->parties()->max('signing_round');
 
-        // Betinget UPDATE: hvis to underskrivere afslutter runden samtidig,
-        // rykker kun den ene runden frem og sender næste rundes mails.
-        $advanced = SigningEnvelope::query()
-            ->whereKey($envelope->getKey())
-            ->where('current_round', $currentRound)
-            ->update(['current_round' => $nextRound]);
+        while ($envelope->current_round < $lastRound
+            && $envelope->isCurrentRoundComplete()
+            && ! $envelope->isAllRoundsComplete()) {
+            $currentRound = $envelope->current_round;
+            $nextRound = $currentRound + 1;
 
-        if ($advanced === 0) {
-            return;
+            // Betinget UPDATE: hvis to processer afslutter runden samtidig,
+            // rykker kun den ene runden frem og sender næste rundes mails.
+            $advanced = SigningEnvelope::query()
+                ->whereKey($envelope->getKey())
+                ->where('current_round', $currentRound)
+                ->update(['current_round' => $nextRound]);
+
+            if ($advanced === 0) {
+                return;
+            }
+
+            $envelope->refresh();
+
+            $envelope->logEvent(SigningEventType::RoundAdvanced, metadata: [
+                'round' => $nextRound,
+            ]);
+
+            $this->notifyRoundParties($envelope, $nextRound);
         }
-
-        $envelope->refresh();
-
-        $envelope->logEvent(SigningEventType::RoundAdvanced, metadata: [
-            'round' => $nextRound,
-        ]);
-
-        $this->notifyRoundParties($envelope, $nextRound);
     }
 
     /**

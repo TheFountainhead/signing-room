@@ -9,6 +9,7 @@ enum SigningEventType: string
     case EnvelopeCompleted = 'envelope.completed';
     case EnvelopeExpired = 'envelope.expired';
     case EnvelopeCancelled = 'envelope.cancelled';
+    case EnvelopeBlocked = 'envelope.blocked';
     case PartyNotified = 'party.notified';
     case PartyReminded = 'party.reminded';
     case PartyViewed = 'party.viewed';

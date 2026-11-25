@@ -48,6 +48,15 @@ return [
         'webhook_middleware' => ['api'],
     ],
 
+    'notifications' => [
+        // PartySignedNotification til afsenderen ved hver underskrift, før
+        // kuverten er færdig. Slået fra som standard, fordi hosts der selv
+        // lytter på PartySignedEvent (Frankston-master og dannebrog-v1 via
+        // App\Listeners\NotifyAdminOnSignature) ellers sender to mails.
+        // Slå til på hosts uden egen listener (sign.frankston.io).
+        'party_signed' => env('SIGNING_ROOM_NOTIFY_PARTY_SIGNED', false),
+    ],
+
     // Callable that resolves branding for a given user_id.
     // Should return ['company_name' => string, 'logo_url' => string|null] or null.
     'branding_resolver' => null,

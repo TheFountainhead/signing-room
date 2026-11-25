@@ -163,7 +163,7 @@
                                 : (string) $event->event_type;
                             $dotColor = match(true) {
                                 str_contains($eventValue, 'signed'), str_contains($eventValue, 'completed') => 'var(--ft-green)',
-                                str_contains($eventValue, 'rejected'), str_contains($eventValue, 'cancelled'), str_contains($eventValue, 'error'), str_contains($eventValue, 'expired') => 'var(--ft-red)',
+                                str_contains($eventValue, 'rejected'), str_contains($eventValue, 'cancelled'), str_contains($eventValue, 'error'), str_contains($eventValue, 'expired'), str_contains($eventValue, 'blocked') => 'var(--ft-red)',
                                 str_contains($eventValue, 'sent'), str_contains($eventValue, 'notified'), str_contains($eventValue, 'viewed') => 'var(--ft-blue)',
                                 default => 'var(--ft-grey)',
                             };
@@ -173,6 +173,7 @@
                                 'envelope.completed' => 'Alle underskrifter modtaget',
                                 'envelope.expired' => 'Udløbet',
                                 'envelope.cancelled' => 'Annulleret',
+                                'envelope.blocked' => 'Fuldførelse blokeret, kræver handling',
                                 'party.notified' => 'Notifikation sendt',
                                 'party.reminded' => 'Påmindelse sendt',
                                 'party.viewed' => 'Dokument åbnet',
