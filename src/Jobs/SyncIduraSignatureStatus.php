@@ -52,6 +52,16 @@ class SyncIduraSignatureStatus implements ShouldQueue
     {
         $order = $idura->getOrderStatus($envelope->idura_signature_order_id);
 
+        // Idura kender ikke ordren (slettet eller ukendt): én rapport, ikke en
+        // fejl hver time.
+        if (! is_array($order) || ! isset($order['status'])) {
+            $envelope->reportBlockedOnce('idura_order_missing', new EnvelopeOrderNotOpenException(
+                "Kuvert {$envelope->id} ({$envelope->uuid}): Idura returnerer ikke ordren {$envelope->idura_signature_order_id}. Afgør manuelt, om kuverten skal annulleres eller sendes igen."
+            ));
+
+            return;
+        }
+
         // Ordrens status FØR underskrifterne behandles: for en udløbet eller
         // annulleret ordre må intet rykkes, fuldføres eller mailes. Men
         // underskrifter givet før udløb/annullering registreres.
@@ -61,6 +71,19 @@ class SyncIduraSignatureStatus implements ShouldQueue
             }
 
             $this->recordSignaturesOnly($envelope, $order, $service);
+
+            // Alle havde underskrevet, men kuverten blev aldrig fuldført (fx
+            // fordi closeOrder blev ved med at fejle), før Idura lod ordren
+            // udløbe: den signerede PDF kan ikke længere hentes. Det skal ikke
+            // forsvinde stille.
+            $envelope->refresh();
+
+            if (! $envelope->isCompleted() && $envelope->isAllRoundsComplete()) {
+                $envelope->reportBlockedOnce(SigningRoomService::orderNotOpenReason('EXPIRED').':all_signed', new EnvelopeOrderNotOpenException(
+                    "Kuvert {$envelope->id} ({$envelope->uuid}): alle har underskrevet, men Idura-ordren {$envelope->idura_signature_order_id} udløb, før kuverten blev fuldført. "
+                    . 'Den signerede PDF er ikke gemt her. Kontakt Idura om dokumentet, eller send kuverten igen.'
+                ), ['idura_status' => 'EXPIRED']);
+            }
 
             return;
         }
@@ -141,8 +164,9 @@ class SyncIduraSignatureStatus implements ShouldQueue
             return;
         }
 
-        // En mail i den aktuelle runde fejlede (parten står stadig pending
-        // uden notified_at): prøv igen. Rører ikke allerede notificerede.
+        // En mail i den aktuelle runde kunne ikke lægges i køen (parten står
+        // stadig pending uden notified_at): prøv igen. Rører ikke allerede
+        // notificerede; fejl i workerens afsendelse ligger i failed_jobs.
         $service->notifyRoundParties($envelope, $envelope->current_round);
 
         $this->reportLegacyViewerBlockOnce($envelope);

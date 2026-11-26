@@ -97,12 +97,6 @@ class SigningEnvelope extends Model
     }
 
     /**
-     * Rapportér en blokering, der kræver manuel handling, én gang pr. kuvert og
-     * årsag (markeret med et envelope.blocked-event), ikke ved hver kørsel.
-     *
-     * Returnerer true hvis den blev rapporteret nu.
-     */
-    /**
      * Markér åbne blokeringer som løst (envelope.unblocked), fx når
      * fuldførelsen lykkes efter en forbigående fejl. Gør intet uden åbne.
      */
@@ -122,6 +116,12 @@ class SigningEnvelope extends Model
         }
     }
 
+    /**
+     * Rapportér en blokering, der kræver manuel handling, én gang pr. kuvert og
+     * årsag (markeret med et envelope.blocked-event), ikke ved hver kørsel.
+     *
+     * Returnerer true hvis den blev rapporteret nu.
+     */
     public function reportBlockedOnce(string $reason, \Throwable $exception, array $metadata = []): bool
     {
         // Kun blokeringer efter seneste "løst": en ny fejl efter en løsning

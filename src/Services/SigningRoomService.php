@@ -181,6 +181,13 @@ class SigningRoomService
         // behandle samme part samtidig; kun den der faktisk flytter rækken til
         // signed, fortsætter. Ellers kommer der dobbelt-mails og dobbelt
         // rundeskift.
+        //
+        // Betingede query-builder-updates (her, PartiallySigned og Completed)
+        // affyrer ikke Eloquent-events (updating/updated/saved). Ingen host
+        // lytter på dem for SigningParty/SigningEnvelope (tjekket 26/11-2026:
+        // Frankston-master, dannebrog-v1, signing-room-app; sidstnævnte har kun
+        // creating-hooks og global scopes, som stadig gælder). Lyt på
+        // PartySignedEvent eller signing_events i stedet.
         $claimed = SigningParty::query()
             ->whereKey($party->getKey())
             ->where('status', '!=', SigningPartyStatus::Signed->value)
@@ -334,7 +341,10 @@ class SigningRoomService
     {
         // Kun underskrivere, der endnu ikke er notificeret: så kan
         // SyncIduraSignatureStatus kalde den igen for en runde, hvor en mail
-        // fejlede, uden at de andre får den to gange.
+        // ikke kunne lægges i køen, uden at de andre får den to gange.
+        // DocumentReadyNotification er queued: fejler selve afsendelsen senere
+        // i workeren, er parten allerede markeret notified, og jobbet ligger i
+        // failed_jobs (queue:retry). Det dækker denne gen-notifikation ikke.
         $parties = $envelope->parties()
             ->where('signing_round', $round)
             ->where('role', SigningPartyRole::Signer->value)
@@ -344,8 +354,8 @@ class SigningRoomService
 
         foreach ($parties as $index => $party) {
             // Resend rate limit: 2 requests/sec: stagger queued sends 1s apart.
-            // Én fejlende mail må ikke stoppe de andre; parten forbliver
-            // pending uden notified_at, og sync prøver igen.
+            // Kan mailen ikke lægges i køen, må det ikke stoppe de andre;
+            // parten forbliver pending uden notified_at, og sync prøver igen.
             try {
                 $party->notify(
                     (new DocumentReadyNotification($envelope, $party))->delay($index),

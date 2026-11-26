@@ -1237,7 +1237,7 @@ class ViewerCompletionTest extends TestCase
 
         \Illuminate\Support\Facades\Queue::assertPushed(\Fountainhead\SigningRoom\Jobs\DispatchPartySignedEvent::class, fn ($job) => $job->party->email === 'a@example.com'
             && $job->queue === null
-            && $job->tries === 3);
+            && $job->tries === 1);
     }
 
     #[Test]
@@ -1253,5 +1253,75 @@ class ViewerCompletionTest extends TestCase
         $a = new \RuntimeException('Idura API request failed with status 503: unavailable (request 1)');
         $b = new \RuntimeException('Idura API request failed with status 503: unavailable (request 2)');
         $this->assertSame(SigningRoomService::completionFailureReason($a), SigningRoomService::completionFailureReason($b));
+    }
+
+    #[Test]
+    public function an_order_that_expires_after_everyone_signed_is_reported_not_silently_expired(): void
+    {
+        Exceptions::fake();
+
+        $envelope = $this->sentEnvelope([['name' => 'A', 'email' => 'a@example.com']]);
+        $this->idura->failNextCloses = 99; // fuldførelsen bliver ved med at fejle
+
+        $this->sign($this->party($envelope, 'a@example.com'));
+        $this->idura->orderStatus = 'EXPIRED';
+        $this->sync();
+        $this->sync();
+
+        $this->assertEquals(EnvelopeStatus::Expired, $envelope->fresh()->status);
+        Exceptions::assertReported(fn (\Fountainhead\SigningRoom\Exceptions\EnvelopeOrderNotOpenException $e) => str_contains($e->getMessage(), 'udløb, før kuverten blev fuldført'));
+        $this->assertSame(1, $envelope->events()->where('event_type', 'envelope.blocked')->get()
+            ->filter(fn ($e) => ($e->metadata['reason'] ?? '') === 'idura_order_expired:all_signed')->count());
+    }
+
+    #[Test]
+    public function an_expired_order_with_a_signer_still_missing_is_not_reported_as_lost(): void
+    {
+        Exceptions::fake();
+
+        $envelope = $this->sentEnvelope([['name' => 'A', 'email' => 'a@example.com'], ['name' => 'B', 'email' => 'b@example.com']]);
+        $this->sign($this->party($envelope, 'a@example.com'));
+        $this->idura->orderStatus = 'EXPIRED';
+        $this->sync();
+
+        Exceptions::assertNothingReported();
+        $this->assertEquals(EnvelopeStatus::Expired, $envelope->fresh()->status);
+    }
+
+    #[Test]
+    public function an_order_idura_no_longer_knows_is_reported_once(): void
+    {
+        Exceptions::fake();
+
+        $envelope = $this->sentEnvelope([['name' => 'A', 'email' => 'a@example.com']]);
+        $this->idura->orderMissing = true;
+
+        $this->sync();
+        $this->sync();
+
+        Exceptions::assertReportedCount(1);
+        Exceptions::assertReported(fn (\Fountainhead\SigningRoom\Exceptions\EnvelopeOrderNotOpenException $e) => str_contains($e->getMessage(), 'returnerer ikke ordren'));
+    }
+
+    #[Test]
+    public function a_resolved_block_is_shown_green_in_the_admin_timeline(): void
+    {
+        $envelope = $this->sentEnvelope([['name' => 'A', 'email' => 'a@example.com']]);
+        $envelope->logEvent(\Fountainhead\SigningRoom\Enums\SigningEventType::EnvelopeBlocked, metadata: ['reason' => 'x']);
+        $envelope->logEvent(\Fountainhead\SigningRoom\Enums\SigningEventType::EnvelopeUnblocked);
+
+        $component = new \Fountainhead\SigningRoom\Livewire\Admin\EnvelopeShow;
+        $component->mount($envelope);
+        // Livewire giver viewet komponentens offentlige egenskaber; her direkte.
+        $html = view('signing-room::admin.envelope-show', get_object_vars($component))->render();
+
+        $this->assertStringContainsString('Blokering løst', $html);
+        // Prikken før "Blokering løst" er grøn, ikke rød.
+        $pos = strpos($html, 'Blokering løst');
+        $before = substr($html, max(0, $pos - 1500), 1500);
+        $lastGreen = strrpos($before, 'var(--ft-green)');
+        $lastRed = strrpos($before, 'var(--ft-red)');
+        $this->assertNotFalse($lastGreen);
+        $this->assertTrue($lastRed === false || $lastGreen > $lastRed, 'Prikken ved "Blokering løst" skal være grøn.');
     }
 }

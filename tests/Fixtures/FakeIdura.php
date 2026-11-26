@@ -112,8 +112,14 @@ class FakeIdura extends IduraSignatureService
         ];
     }
 
-    public function getOrderStatus(string $orderId): array
+    public bool $orderMissing = false;
+
+    public function getOrderStatus(string $orderId): ?array
     {
+        if ($this->orderMissing) {
+            return null;
+        }
+
         return [
             'id' => $orderId,
             'status' => $this->orderStatus,

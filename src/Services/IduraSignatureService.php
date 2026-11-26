@@ -243,7 +243,10 @@ GRAPHQL;
     /**
      * Fetch the current status of a signature order (for fallback polling).
      */
-    public function getOrderStatus(string $orderId): array
+    /**
+     * @return array|null null når Idura ikke kender ordren (slettet/ukendt)
+     */
+    public function getOrderStatus(string $orderId): ?array
     {
         $query = <<<'GRAPHQL'
 query GetSignatureOrder($id: ID!) {
@@ -267,7 +270,7 @@ GRAPHQL;
 
         $result = $this->query($query, ['id' => $orderId]);
 
-        return $result['signatureOrder'];
+        return $result['signatureOrder'] ?? null;
     }
 
     /**
