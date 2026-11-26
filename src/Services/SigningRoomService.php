@@ -376,7 +376,10 @@ class SigningRoomService
         // lukkes: har alle underskrevet, forsøges fuldførelsen. Lykkes den ikke
         // nu, udløber kuverten ikke lokalt; sync prøver igen, og udløber
         // ordren hos Idura, rapporterer sync det.
-        if (! $iduraExpired && ! $envelope->isCompleted() && $envelope->isAllRoundsComplete()) {
+        // allSignersSigned(), ikke isAllRoundsComplete(): også når en gammel
+        // kopimodtager blokerer lukningen, findes underskrifterne, og
+        // kuverten må ikke udløbe stille lokalt (sync rapporterer blokeringen).
+        if (! $iduraExpired && ! $envelope->isCompleted() && $envelope->allSignersSigned()) {
             $this->completeEnvelope($envelope);
             $envelope->refresh();
 
@@ -394,10 +397,11 @@ class SigningRoomService
             return false;
         }
 
-        // Kun her, ved Idura-udløb: alle havde underskrevet, men kuverten blev
-        // aldrig fuldført. Samme nøgle som closeOrderAndStore bruger for en
-        // udløbet ordre, så det bliver én rapport.
-        if ($envelope->isAllRoundsComplete()) {
+        // Kun her, ved Idura-udløb: alle underskrivere havde underskrevet, men
+        // kuverten blev aldrig fuldført (også hvis en gammel kopimodtager
+        // blokerede). Samme nøgle som closeOrderAndStore bruger for en udløbet
+        // ordre, så det bliver én rapport.
+        if ($envelope->allSignersSigned()) {
             $envelope->reportBlockedOnce(self::orderNotOpenReason('EXPIRED'), new EnvelopeOrderNotOpenException(
                 "Kuvert {$envelope->id} ({$envelope->uuid}): alle har underskrevet, men Idura-ordren {$envelope->idura_signature_order_id} udløb, før kuverten blev fuldført. "
                 . 'Den signerede PDF er ikke gemt her. Kontakt Idura om dokumentet, eller send kuverten igen.'
@@ -474,18 +478,22 @@ class SigningRoomService
         $parties = $envelope->parties()
             ->where('signing_round', $round)
             ->where('role', SigningPartyRole::Signer->value)
-            ->where('status', SigningPartyStatus::Pending->value)
+            // Ikke notificeret endnu, uanset om parten har kigget i portalen
+            // (viewed) eller haft en fejl før sin runde.
             ->whereNull('notified_at')
+            ->whereNotIn('status', [SigningPartyStatus::Signed->value, SigningPartyStatus::Rejected->value])
             ->get();
 
         foreach ($parties as $index => $party) {
             // Claim parten atomisk, før mailen sendes: sync og en webhook kan
             // nå hertil samtidig, og kun den, der flytter parten fra pending,
             // sender.
+            $previousStatus = $party->status instanceof SigningPartyStatus ? $party->status->value : $party->status;
+
             $claimed = SigningParty::query()
                 ->whereKey($party->getKey())
-                ->where('status', SigningPartyStatus::Pending->value)
                 ->whereNull('notified_at')
+                ->whereNotIn('status', [SigningPartyStatus::Signed->value, SigningPartyStatus::Rejected->value])
                 ->update([
                     'status' => SigningPartyStatus::Notified->value,
                     'notified_at' => now(),
@@ -505,7 +513,7 @@ class SigningRoomService
             } catch (\Throwable $e) {
                 SigningParty::query()
                     ->whereKey($party->getKey())
-                    ->update(['status' => SigningPartyStatus::Pending->value, 'notified_at' => null]);
+                    ->update(['status' => $previousStatus, 'notified_at' => null]);
                 report($e);
 
                 continue;

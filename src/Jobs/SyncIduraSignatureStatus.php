@@ -54,12 +54,16 @@ class SyncIduraSignatureStatus implements ShouldQueue, ShouldBeUnique
         foreach ($envelopes as $envelope) {
             // Én kuvert der fejler, må ikke stoppe synkroniseringen af resten.
             try {
-                $this->syncEnvelope($envelope, $idura, $service);
+                $inspectedSignatories = $this->syncEnvelope($envelope, $idura, $service);
 
-                // Synkroniseringen lykkedes: en tidligere sync-fejl er løst,
-                // og tidspunktet afgrænser alderen på næste kørsels fund.
+                // Synkroniseringen lykkedes: en tidligere sync-fejl er løst.
                 $envelope->resolveBlocks('sync_failed:');
-                SigningEnvelope::query()->whereKey($envelope->getKey())->update(['last_synced_at' => now()]);
+
+                // Kun når Idura's signatories faktisk blev set, afgrænser
+                // tidspunktet alderen på næste kørsels fund.
+                if ($inspectedSignatories) {
+                    SigningEnvelope::query()->whereKey($envelope->getKey())->update(['last_synced_at' => now()]);
+                }
             } catch (\Throwable $e) {
                 // Fx et Idura-nedbrud eller forkerte credentials: én rapport pr.
                 // kuvert og fejltype, ikke én i timen.
@@ -68,7 +72,10 @@ class SyncIduraSignatureStatus implements ShouldQueue, ShouldBeUnique
         }
     }
 
-    private function syncEnvelope(SigningEnvelope $envelope, IduraSignatureService $idura, SigningRoomService $service): void
+    /**
+     * @return bool true hvis Idura's signatories blev gennemgået
+     */
+    private function syncEnvelope(SigningEnvelope $envelope, IduraSignatureService $idura, SigningRoomService $service): bool
     {
         $order = $idura->getOrderStatus($envelope->idura_signature_order_id);
 
@@ -79,7 +86,7 @@ class SyncIduraSignatureStatus implements ShouldQueue, ShouldBeUnique
                 "Kuvert {$envelope->id} ({$envelope->uuid}): Idura returnerer ikke ordren {$envelope->idura_signature_order_id}. Afgør manuelt, om kuverten skal annulleres eller sendes igen."
             ));
 
-            return;
+            return false;
         }
 
         // Ordrens status FØR underskrifterne behandles: for en udløbet eller
@@ -91,7 +98,7 @@ class SyncIduraSignatureStatus implements ShouldQueue, ShouldBeUnique
             $this->recordSignaturesOnly($envelope, $order, $service);
             $service->expireEnvelope($envelope);
 
-            return;
+            return true;
         }
 
         if (! in_array($order['status'], ['OPEN', 'CLOSED'], true)) {
@@ -102,7 +109,7 @@ class SyncIduraSignatureStatus implements ShouldQueue, ShouldBeUnique
 
             $this->recordSignaturesOnly($envelope, $order, $service);
 
-            return;
+            return true;
         }
 
         $handledSignature = false;
@@ -154,7 +161,7 @@ class SyncIduraSignatureStatus implements ShouldQueue, ShouldBeUnique
                 $service->completeEnvelope($envelope);
             }
 
-            return;
+            return true;
         }
 
         if ($envelope->isAllRoundsComplete()) {
@@ -165,7 +172,7 @@ class SyncIduraSignatureStatus implements ShouldQueue, ShouldBeUnique
                 $service->completeEnvelope($envelope);
             }
 
-            return;
+            return true;
         }
 
         // Runden er færdig, men blev aldrig rykket (fx fejlede noget efter
@@ -175,7 +182,7 @@ class SyncIduraSignatureStatus implements ShouldQueue, ShouldBeUnique
         if ($envelope->isCurrentRoundComplete()) {
             $service->advanceRound($envelope);
 
-            return;
+            return true;
         }
 
         // En mail i den aktuelle runde kunne ikke lægges i køen (parten står
@@ -184,6 +191,8 @@ class SyncIduraSignatureStatus implements ShouldQueue, ShouldBeUnique
         $service->notifyRoundParties($envelope, $envelope->current_round);
 
         $this->reportLegacyViewerBlockOnce($envelope);
+
+        return true;
     }
 
     /**

@@ -74,7 +74,9 @@ class EnvelopeCreate extends Component
     private function hasSigner(): bool
     {
         $hasSigner = collect($this->allParties())
-            ->contains(fn (array $party) => ($party['role'] ?? 'signer') === 'signer');
+            // Som SigningRoomService: tom eller manglende rolle er signer, og
+            // store/små bogstaver er ligegyldige.
+            ->contains(fn (array $party) => in_array(strtolower(trim((string) ($party['role'] ?? ''))), ['', 'signer'], true));
 
         if (! $hasSigner) {
             $this->addError('parties', 'Tilføj mindst én underskriver.');

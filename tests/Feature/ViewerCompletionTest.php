@@ -1746,4 +1746,103 @@ class ViewerCompletionTest extends TestCase
 
         $this->assertSame('signing-room', $job->queue);
     }
+
+    #[Test]
+    public function a_next_round_signer_who_already_opened_the_document_is_still_mailed(): void
+    {
+        $envelope = $this->sentEnvelope([
+            ['name' => 'R1', 'email' => 'r1@example.com', 'signing_round' => 1],
+            ['name' => 'R2', 'email' => 'r2@example.com', 'signing_round' => 2],
+        ]);
+        // R2 kigger i portalen, før runde 2 starter.
+        $this->party($envelope, 'r2@example.com')->update(['status' => SigningPartyStatus::Viewed, 'viewed_at' => now()]);
+
+        $this->sign($this->party($envelope, 'r1@example.com'));
+
+        Notification::assertSentToTimes($this->party($envelope, 'r2@example.com'), DocumentReadyNotification::class, 1);
+    }
+
+    #[Test]
+    public function a_legacy_viewer_blocked_envelope_with_all_signatures_does_not_expire_locally_and_is_reported_on_idura_expiry(): void
+    {
+        Exceptions::fake();
+
+        $envelope = $this->sentEnvelope([
+            ['name' => 'A', 'email' => 'a@example.com'],
+            ['name' => 'Kopi', 'email' => 'viewer@example.com', 'role' => SigningPartyRole::Viewer->value],
+        ]);
+        $this->addLegacyViewer($envelope, 'viewer@example.com');
+        $this->sign($this->party($envelope, 'a@example.com'));
+
+        SigningEnvelope::whereKey($envelope->id)->update(['expires_at' => now()->subDay()]);
+        $this->app->call([new \Fountainhead\SigningRoom\Jobs\ExpireSigningEnvelopes, 'handle']);
+        $this->assertNotEquals(EnvelopeStatus::Expired, $envelope->fresh()->status, 'Underskrifterne findes; kuverten må ikke udløbe stille lokalt.');
+
+        $this->assertFalse($this->service->expireEnvelope($envelope, iduraExpired: false));
+        $this->assertTrue($this->service->expireEnvelope($envelope, iduraExpired: true));
+        Exceptions::assertReported(fn (\Fountainhead\SigningRoom\Exceptions\EnvelopeOrderNotOpenException $e) => str_contains($e->getMessage(), 'udløb, før kuverten blev fuldført'));
+    }
+
+    #[Test]
+    public function a_sync_that_never_saw_the_signatories_does_not_count_as_a_recent_sync(): void
+    {
+        $envelope = $this->sentEnvelope([['name' => 'A', 'email' => 'a@example.com']]);
+        $this->idura->orderMissing = true;
+
+        $this->sync();
+
+        $this->assertNull($envelope->fresh()->last_synced_at);
+
+        $this->idura->orderMissing = false;
+        $this->sync();
+        $this->assertNotNull($envelope->fresh()->last_synced_at);
+    }
+
+    #[Test]
+    public function the_admin_form_treats_an_empty_or_capitalised_role_as_signer_like_the_service(): void
+    {
+        $hasSigner = new \ReflectionMethod(\Fountainhead\SigningRoom\Livewire\Admin\EnvelopeCreate::class, 'hasSigner');
+
+        foreach (['', 'Signer', 'SIGNER', 'signer'] as $role) {
+            $component = new \Fountainhead\SigningRoom\Livewire\Admin\EnvelopeCreate;
+            $component->parties = [['name' => 'A', 'email' => 'a@example.com', 'role' => $role, 'signing_round' => 1]];
+            $this->assertTrue($hasSigner->invoke($component), "rolle '{$role}'");
+        }
+
+        $component = new \Fountainhead\SigningRoom\Livewire\Admin\EnvelopeCreate;
+        $component->parties = [['name' => 'A', 'email' => 'a@example.com', 'role' => 'viewer', 'signing_round' => 1]];
+        $this->assertFalse($hasSigner->invoke($component));
+    }
+
+    #[Test]
+    public function a_failed_round_mail_restores_the_party_status_it_had(): void
+    {
+        Exceptions::fake();
+
+        $envelope = $this->sentEnvelope([
+            ['name' => 'R1', 'email' => 'r1@example.com', 'signing_round' => 1],
+            ['name' => 'R2', 'email' => 'r2@example.com', 'signing_round' => 2],
+        ]);
+        $this->party($envelope, 'r2@example.com')->update(['status' => SigningPartyStatus::Viewed, 'viewed_at' => now()]);
+
+        $fake = Notification::getFacadeRoot();
+        Notification::swap(new class($fake) extends \Illuminate\Support\Testing\Fakes\NotificationFake {
+            public function __construct(private $inner) {}
+
+            public function send($notifiables, $notification)
+            {
+                if ($notification instanceof DocumentReadyNotification) {
+                    throw new \RuntimeException('Mailkø nede');
+                }
+
+                $this->inner->send($notifiables, $notification);
+            }
+        });
+
+        $this->sign($this->party($envelope, 'r1@example.com'));
+
+        $r2 = $this->party($envelope, 'r2@example.com');
+        $this->assertEquals(SigningPartyStatus::Viewed, $r2->status);
+        $this->assertNull($r2->notified_at);
+    }
 }

@@ -172,6 +172,17 @@ class SigningEnvelope extends Model
         return $logged;
     }
 
+    /**
+     * Alle underskrivere (role=signer) har underskrevet. Til forskel fra
+     * isAllRoundsComplete() tæller gamle kopimodtagere med Idura-id ikke med:
+     * underskrifterne findes, selv om ordren ikke kan lukkes.
+     */
+    public function allSignersSigned(): bool
+    {
+        return $this->parties()->where('role', 'signer')->exists()
+            && $this->parties()->where('role', 'signer')->whereNot('status', 'signed')->doesntExist();
+    }
+
     public function hasRejectedSigner(): bool
     {
         return $this->parties()->where('role', 'signer')->where('status', 'rejected')->exists();
