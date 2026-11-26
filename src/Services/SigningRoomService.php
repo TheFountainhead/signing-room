@@ -179,7 +179,7 @@ class SigningRoomService
      *     uden rundeskift, fuldførelse eller mails. Bruges, når Idura-ordren er
      *     udløbet eller annulleret, men underskriften blev givet før.
      */
-    public function handleSigned(SigningParty $party, ?array $signatureData = null, bool $progress = true, bool $backfilled = false): bool
+    public function handleSigned(SigningParty $party, ?array $signatureData = null, bool $progress = true, bool $backfilled = false, bool $dispatchEvent = true): bool
     {
         // Claim underskriften atomisk. En gentaget webhook og sync-jobbet kan
         // behandle samme part samtidig; kun den der faktisk flytter rækken til
@@ -214,7 +214,7 @@ class SigningRoomService
 
         $party->refresh();
 
-        $this->recordSignature($party, $backfilled);
+        $this->recordSignature($party, $backfilled, $dispatchEvent);
 
         $envelope = $party->envelope;
 
@@ -278,7 +278,13 @@ class SigningRoomService
      * parten. Kaldes af handleSigned og af SyncIduraSignatureStatus for parter,
      * der blev claimet, men hvor dette trin aldrig blev fuldført.
      */
-    public function recordSignature(SigningParty $party, bool $backfilled = false): void
+    /**
+     * @param  bool  $dispatchEvent  false: party.signed logges, men
+     *     PartySignedEvent affyres ikke (fx en underskrift fundet ved polling,
+     *     hvis alder er ukendt, så host-listeners ikke fakturerer eller mailer
+     *     en gammel underskrift som ny). Det logges som advarsel.
+     */
+    public function recordSignature(SigningParty $party, bool $backfilled = false, bool $dispatchEvent = true): void
     {
         $envelope = $party->envelope;
 
@@ -306,7 +312,16 @@ class SigningRoomService
             }
         }
 
-        $envelope->logEvent(SigningEventType::PartySigned, $party);
+        $envelope->logEvent(SigningEventType::PartySigned, $party, $dispatchEvent ? null : ['event_skipped' => 'unknown_age']);
+
+        if (! $dispatchEvent) {
+            \Illuminate\Support\Facades\Log::warning('signing-room: underskrift registreret uden PartySignedEvent (fundet ved polling, ukendt alder). Tjek om host-listeners (fx fakturering) skal have den.', [
+                'envelope_id' => $envelope->id,
+                'party_id' => $party->id,
+            ]);
+
+            return;
+        }
 
         // Via køen, ét forsøg: fejler en host-listener, ender jobbet i
         // failed_jobs i stedet for at gå tabt (party.signed er allerede
@@ -332,9 +347,16 @@ class SigningRoomService
      *
      * Returnerer true hvis kuverten blev sat til Expired nu.
      */
-    public function expireEnvelope(SigningEnvelope $envelope): bool
+    public function expireEnvelope(SigningEnvelope $envelope, bool $iduraExpired = true): bool
     {
         $envelope->refresh();
+
+        // Lokalt udløb (dagligt job), mens Idura-ordren måske stadig kan
+        // lukkes: har alle underskrevet, forsøges fuldførelsen først.
+        if (! $iduraExpired && ! $envelope->isCompleted() && $envelope->isAllRoundsComplete()) {
+            $this->completeEnvelope($envelope);
+            $envelope->refresh();
+        }
 
         if ($envelope->isCompleted()) {
             if ($envelope->status !== EnvelopeStatus::Completed) {
@@ -346,17 +368,31 @@ class SigningRoomService
         }
 
         if ($envelope->isAllRoundsComplete()) {
+            $why = $iduraExpired
+                ? "Idura-ordren {$envelope->idura_signature_order_id} udløb, før kuverten blev fuldført"
+                : 'kuverten nåede sin udløbsdato, og fuldførelsen lykkedes ikke';
+
             $envelope->reportBlockedOnce(self::orderNotOpenReason('EXPIRED').':all_signed', new EnvelopeOrderNotOpenException(
-                "Kuvert {$envelope->id} ({$envelope->uuid}): alle har underskrevet, men Idura-ordren {$envelope->idura_signature_order_id} udløb, før kuverten blev fuldført. "
+                "Kuvert {$envelope->id} ({$envelope->uuid}): alle har underskrevet, men {$why}. "
                 . 'Den signerede PDF er ikke gemt her. Kontakt Idura om dokumentet, eller send kuverten igen.'
-            ), ['idura_status' => 'EXPIRED']);
+            ), ['idura_status' => $iduraExpired ? 'EXPIRED' : 'local_expiry']);
         }
 
-        if ($envelope->status === EnvelopeStatus::Expired) {
+        // Betinget: en fuldførelse, der bliver færdig i mellemtiden, må ikke
+        // overskrives med Expired.
+        $expired = SigningEnvelope::query()
+            ->whereKey($envelope->getKey())
+            ->whereNull('completed_at')
+            ->whereNull('signed_document')
+            ->whereNotIn('status', [EnvelopeStatus::Completed->value, EnvelopeStatus::Expired->value, EnvelopeStatus::Cancelled->value])
+            ->update(['status' => EnvelopeStatus::Expired->value]);
+
+        $envelope->refresh();
+
+        if ($expired === 0) {
             return false;
         }
 
-        $envelope->update(['status' => EnvelopeStatus::Expired]);
         $envelope->logEvent(SigningEventType::EnvelopeExpired);
 
         return true;

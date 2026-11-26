@@ -28,9 +28,16 @@ class IduraWebhookController extends Controller
             return response()->json(['status' => 'ignored', 'reason' => 'unknown order'], 200);
         }
 
+        // Inden for kuverten: et signatory-id fra en anden ordre må ikke ramme.
         $party = $signatoryId
-            ? SigningParty::where('idura_signatory_id', $signatoryId)->first()
+            ? SigningParty::where('signing_envelope_id', $envelope->id)->where('idura_signatory_id', $signatoryId)->first()
             : null;
+
+        // Ukendt signatory (fx en slettet gammel kopimodtager hos Idura):
+        // ignorér i stedet for en TypeError og en 500, som Idura gentager.
+        if ($party === null && in_array($event, ['SIGNATORY_SIGNED', 'SIGNATORY_REJECTED'], true)) {
+            return response()->json(['status' => 'ignored', 'reason' => 'unknown signatory'], 200);
+        }
 
         match ($event) {
             'SIGNATORY_SIGNED' => $service->handleSigned($party, $request->all()),

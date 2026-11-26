@@ -100,20 +100,39 @@ class SigningEnvelope extends Model
      * Markér åbne blokeringer som løst (envelope.unblocked), fx når
      * fuldførelsen lykkes efter en forbigående fejl. Gør intet uden åbne.
      */
-    public function resolveBlocks(): void
+    public function resolveBlocks(?string $reasonPrefix = null): void
     {
-        $lastUnblockedId = $this->events()
-            ->where('event_type', SigningEventType::EnvelopeUnblocked->value)
-            ->max('id');
+        $open = $this->openBlocks()
+            ->filter(fn (SigningEvent $event) => $reasonPrefix === null
+                || str_starts_with((string) ($event->metadata['reason'] ?? ''), $reasonPrefix));
 
-        $open = $this->events()
-            ->where('event_type', SigningEventType::EnvelopeBlocked->value)
-            ->when($lastUnblockedId, fn ($q) => $q->where('id', '>', $lastUnblockedId))
-            ->exists();
-
-        if ($open) {
-            $this->logEvent(SigningEventType::EnvelopeUnblocked);
+        if ($open->isNotEmpty()) {
+            $this->logEvent(SigningEventType::EnvelopeUnblocked, metadata: ['reason_prefix' => $reasonPrefix]);
         }
+    }
+
+    /**
+     * Blokeringer, der ikke er løst: logget efter seneste "løst" for alle
+     * årsager, eller for et præfiks, der matcher deres årsag.
+     *
+     * @return \Illuminate\Support\Collection<int, SigningEvent>
+     */
+    private function openBlocks(): \Illuminate\Support\Collection
+    {
+        $unblocks = $this->events()
+            ->where('event_type', SigningEventType::EnvelopeUnblocked->value)
+            ->get(['id', 'metadata']);
+
+        return $this->events()
+            ->where('event_type', SigningEventType::EnvelopeBlocked->value)
+            ->get()
+            ->reject(function (SigningEvent $block) use ($unblocks) {
+                $reason = (string) ($block->metadata['reason'] ?? '');
+
+                return $unblocks->contains(fn (SigningEvent $unblock) => $unblock->id > $block->id
+                    && (($prefix = $unblock->metadata['reason_prefix'] ?? null) === null || str_starts_with($reason, $prefix)));
+            })
+            ->values();
     }
 
     /**
@@ -124,16 +143,9 @@ class SigningEnvelope extends Model
      */
     public function reportBlockedOnce(string $reason, \Throwable $exception, array $metadata = []): bool
     {
-        // Kun blokeringer efter seneste "løst": en ny fejl efter en løsning
-        // skal rapporteres igen.
-        $lastUnblockedId = $this->events()
-            ->where('event_type', SigningEventType::EnvelopeUnblocked->value)
-            ->max('id');
-
-        $alreadyReported = $this->events()
-            ->where('event_type', SigningEventType::EnvelopeBlocked->value)
-            ->when($lastUnblockedId, fn ($q) => $q->where('id', '>', $lastUnblockedId))
-            ->get()
+        // Kun åbne blokeringer: en ny fejl efter en løsning skal rapporteres
+        // igen.
+        $alreadyReported = $this->openBlocks()
             ->contains(fn (SigningEvent $event) => ($event->metadata['reason'] ?? null) === $reason);
 
         if ($alreadyReported) {
@@ -215,7 +227,21 @@ class SigningEnvelope extends Model
     {
         $since = config('signing-room.process_envelopes_created_since');
 
-        return $since ? $query->where('created_at', '>=', \Illuminate\Support\Carbon::parse($since)->startOfDay()) : $query;
+        if ($since === null || $since === '') {
+            return $query;
+        }
+
+        // Kun Y-m-d. En ugyldig værdi (fx 26/11-2026) behandler ingen kuverter
+        // og logges: hellere ingen jobs end hele efterslæbet.
+        $date = \DateTimeImmutable::createFromFormat('!Y-m-d', (string) $since);
+
+        if ($date === false || $date->format('Y-m-d') !== (string) $since) {
+            \Illuminate\Support\Facades\Log::error('signing-room.process_envelopes_created_since (SIGNING_ROOM_PROCESS_SINCE) er ikke en gyldig dato (Y-m-d); de planlagte jobs springer alle kuverter over.', ['value' => $since]);
+
+            return $query->whereRaw('1 = 0');
+        }
+
+        return $query->where('created_at', '>=', $date->format('Y-m-d 00:00:00'));
     }
 
     public function getRouteKeyName(): string

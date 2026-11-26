@@ -1502,4 +1502,130 @@ class ViewerCompletionTest extends TestCase
 
         Exceptions::assertReportedCount(1);
     }
+
+    #[Test]
+    public function a_polled_signature_of_unknown_age_is_recorded_without_the_event(): void
+    {
+        \Illuminate\Support\Facades\Event::fake([\Fountainhead\SigningRoom\Events\PartySignedEvent::class]);
+        \Illuminate\Support\Facades\Log::spy();
+
+        $envelope = $this->sentEnvelope([['name' => 'A', 'email' => 'a@example.com'], ['name' => 'B', 'email' => 'b@example.com']]);
+        $a = $this->party($envelope, 'a@example.com');
+        $a->update(['notified_at' => now()->subDays(40)]); // inviteret for længe siden
+        $this->idura->markSigned($a->idura_signatory_id);
+
+        $this->sync();
+
+        $this->assertEquals(SigningPartyStatus::Signed, $a->fresh()->status);
+        \Illuminate\Support\Facades\Event::assertNotDispatched(\Fountainhead\SigningRoom\Events\PartySignedEvent::class);
+        $event = $envelope->events()->where('event_type', 'party.signed')->where('signing_party_id', $a->id)->first();
+        $this->assertSame('unknown_age', $event->metadata['event_skipped'] ?? null);
+        \Illuminate\Support\Facades\Log::shouldHaveReceived('warning')->withArgs(fn ($message) => str_contains($message, 'uden PartySignedEvent'));
+    }
+
+    #[Test]
+    public function the_daily_expiry_job_completes_an_all_signed_envelope_whose_idura_order_is_still_open(): void
+    {
+        $envelope = $this->sentEnvelope([['name' => 'A', 'email' => 'a@example.com']]);
+        $this->idura->failNextCloses = 1; // første forsøg fejler; ordren er stadig åben
+        $this->sign($this->party($envelope, 'a@example.com'));
+        SigningEnvelope::whereKey($envelope->id)->update(['expires_at' => now()->subDay()]);
+
+        $this->app->call([new \Fountainhead\SigningRoom\Jobs\ExpireSigningEnvelopes, 'handle']);
+
+        $this->assertEquals(EnvelopeStatus::Completed, $envelope->fresh()->status);
+        Notification::assertSentTo($this->party($envelope, 'a@example.com'), EnvelopeCompletedNotification::class);
+    }
+
+    #[Test]
+    public function an_expiry_does_not_overwrite_a_completion_that_finishes_at_the_same_time(): void
+    {
+        $envelope = $this->sentEnvelope([['name' => 'A', 'email' => 'a@example.com'], ['name' => 'B', 'email' => 'b@example.com']]);
+
+        // Mens expireEnvelope kigger på parterne, fuldfører en anden proces.
+        $done = false;
+        \Illuminate\Support\Facades\DB::listen(function ($query) use (&$done, $envelope) {
+            if (! $done && str_contains($query->sql, 'from "signing_parties"')) {
+                $done = true;
+                \Illuminate\Support\Facades\DB::table('signing_envelopes')->where('id', $envelope->id)->update([
+                    'status' => EnvelopeStatus::Completed->value,
+                    'completed_at' => now(),
+                    'signed_document' => 'signing-room/x.pdf',
+                ]);
+            }
+        });
+
+        $this->assertFalse($this->service->expireEnvelope($envelope));
+        $this->assertEquals(EnvelopeStatus::Completed, $envelope->fresh()->status);
+        $this->assertSame(0, $envelope->events()->where('event_type', 'envelope.expired')->count());
+    }
+
+    #[Test]
+    public function a_sync_failure_is_resolved_by_the_next_successful_sync_and_a_new_one_is_reported_again(): void
+    {
+        Exceptions::fake();
+
+        $envelope = $this->sentEnvelope([['name' => 'A', 'email' => 'a@example.com'], ['name' => 'B', 'email' => 'b@example.com']]);
+
+        $this->idura->orderStatusFailure = new \RuntimeException('Idura API request failed with status 503: nede');
+        $this->sync();
+        $this->idura->orderStatusFailure = null;
+        $this->sync();
+
+        $this->assertSame(1, $envelope->events()->where('event_type', 'envelope.unblocked')->count());
+
+        $this->idura->orderStatusFailure = new \RuntimeException('Idura API request failed with status 503: nede igen');
+        $this->sync();
+
+        Exceptions::assertReportedCount(2);
+    }
+
+    #[Test]
+    public function an_invalid_cutoff_date_processes_nothing_and_is_logged(): void
+    {
+        \Illuminate\Support\Facades\Log::spy();
+        $this->sentEnvelope([['name' => 'A', 'email' => 'a@example.com']]);
+        config(['signing-room.process_envelopes_created_since' => '26/11-2026']);
+
+        $calls = $this->idura->orderStatusCalls;
+        $this->sync();
+
+        $this->assertSame($calls, $this->idura->orderStatusCalls);
+        \Illuminate\Support\Facades\Log::shouldHaveReceived('error')->withArgs(fn ($message) => str_contains($message, 'ikke en gyldig dato'));
+    }
+
+    #[Test]
+    public function a_webhook_for_an_unknown_signatory_is_ignored_not_a_500(): void
+    {
+        config(['signing-room.idura.webhook_secret' => null]);
+        $envelope = $this->sentEnvelope([['name' => 'A', 'email' => 'a@example.com']]);
+
+        $this->postJson(route('signing-room.webhook'), [
+            'event' => 'SIGNATORY_SIGNED',
+            'signatureOrderId' => $envelope->idura_signature_order_id,
+            'signatoryId' => 'Signatory:deleted-legacy-viewer',
+        ])->assertOk()->assertJson(['status' => 'ignored']);
+    }
+
+    #[Test]
+    public function resolving_a_sync_failure_leaves_other_blocks_open(): void
+    {
+        Exceptions::fake();
+
+        $envelope = $this->sentEnvelope([
+            ['name' => 'A', 'email' => 'a@example.com'],
+            ['name' => 'Kopi', 'email' => 'viewer@example.com', 'role' => SigningPartyRole::Viewer->value],
+        ]);
+        $this->addLegacyViewer($envelope, 'viewer@example.com');
+        $this->sign($this->party($envelope, 'a@example.com'));
+
+        $this->sync(); // gammel kopimodtager: rapport 1
+        $this->idura->orderStatusFailure = new \RuntimeException('Idura API request failed with status 503: nede');
+        $this->sync(); // sync-fejl: rapport 2
+        $this->idura->orderStatusFailure = null;
+        $this->sync(); // lykkes: kun sync-fejlen løses
+        $this->sync();
+
+        Exceptions::assertReportedCount(2);
+    }
 }

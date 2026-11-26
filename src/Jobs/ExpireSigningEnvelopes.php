@@ -39,7 +39,8 @@ class ExpireSigningEnvelopes implements ShouldQueue
             ->tap(fn ($query) => SigningEnvelope::onlyProcessable($query))
             // Ingen returværdi: each() stopper, hvis callbacken returnerer false.
             ->each(function (SigningEnvelope $envelope) use ($service): void {
-                $service->expireEnvelope($envelope);
+                // Lokalt udløb: Idura-ordren kan stadig være åben.
+                $service->expireEnvelope($envelope, iduraExpired: false);
             });
     }
 }

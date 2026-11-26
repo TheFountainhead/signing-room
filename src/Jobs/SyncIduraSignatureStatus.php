@@ -46,6 +46,9 @@ class SyncIduraSignatureStatus implements ShouldQueue
             // Én kuvert der fejler, må ikke stoppe synkroniseringen af resten.
             try {
                 $this->syncEnvelope($envelope, $idura, $service);
+
+                // Synkroniseringen lykkedes: en tidligere sync-fejl er løst.
+                $envelope->resolveBlocks('sync_failed:');
             } catch (\Throwable $e) {
                 // Fx et Idura-nedbrud eller forkerte credentials: én rapport pr.
                 // kuvert og fejltype, ikke én i timen.
@@ -107,7 +110,7 @@ class SyncIduraSignatureStatus implements ShouldQueue
                 // underskriften, har den også selv forsøgt fuldførelsen.
                 // Fundet ved polling: webhooken kom aldrig, og underskriften kan
                 // være gammel. Eventet markeres som indhentet.
-                if ($service->handleSigned($party, ['synced_from_polling' => true], backfilled: true)) {
+                if ($service->handleSigned($party, ['synced_from_polling' => true], backfilled: true, dispatchEvent: self::isRecentlyInvited($party))) {
                     $handledSignature = true;
                 }
             }
@@ -167,6 +170,17 @@ class SyncIduraSignatureStatus implements ShouldQueue
     }
 
     /**
+     * Idura oplyser ikke, hvornår der blev underskrevet. Blev parten inviteret
+     * inden for RECORD_BACKFILL_HOURS, er underskriften højst så gammel; ellers
+     * er alderen ukendt, og PartySignedEvent affyres ikke (host-listeners
+     * fakturerer og mailer pr. event).
+     */
+    private static function isRecentlyInvited(\Fountainhead\SigningRoom\Models\SigningParty $party): bool
+    {
+        return $party->notified_at !== null && $party->notified_at->gt(now()->subHours(self::RECORD_BACKFILL_HOURS));
+    }
+
+    /**
      * Underskrifter, Idura har som SIGNED, registreres uden rundeskift,
      * fuldførelse eller mails.
      */
@@ -182,7 +196,7 @@ class SyncIduraSignatureStatus implements ShouldQueue
                 ->first();
 
             if ($party && $party->status->value !== 'signed') {
-                $service->handleSigned($party, ['synced_from_polling' => true], progress: false, backfilled: true);
+                $service->handleSigned($party, ['synced_from_polling' => true], progress: false, backfilled: true, dispatchEvent: self::isRecentlyInvited($party));
             }
         }
     }
