@@ -2076,23 +2076,39 @@ class ViewerCompletionTest extends TestCase
         $this->assertTrue($sent->expires_at->gt(now()->addDays(2)));
     }
 
-    #[Test]
-    public function only_recently_expired_all_signed_envelopes_are_retried(): void
+    private function expiredAllSigned(string $email, \DateTimeInterface $signedAt): SigningEnvelope
     {
-        $recent = $this->sentEnvelope([['name' => 'A', 'email' => 'a@example.com']]);
-        $this->idura->markSigned($this->party($recent, 'a@example.com')->idura_signatory_id);
-        $this->party($recent, 'a@example.com')->update(['status' => SigningPartyStatus::Signed, 'signed_at' => now()->subDays(3)]);
-        SigningEnvelope::whereKey($recent->id)->update(['status' => EnvelopeStatus::Expired->value, 'expires_at' => now()->subDays(2)]);
-
         $this->idura->orderStatus = 'OPEN';
-        $old = $this->sentEnvelope([['name' => 'B', 'email' => 'b@example.com']]);
-        $this->idura->markSigned($this->party($old, 'b@example.com')->idura_signatory_id);
-        $this->party($old, 'b@example.com')->update(['status' => SigningPartyStatus::Signed, 'signed_at' => now()->subMonths(4)]);
-        SigningEnvelope::whereKey($old->id)->update(['status' => EnvelopeStatus::Expired->value, 'expires_at' => now()->subMonths(3)]);
+        $envelope = $this->sentEnvelope([['name' => $email, 'email' => $email]]);
+        $party = $this->party($envelope, $email);
+        $this->idura->markSigned($party->idura_signatory_id);
+        $party->update(['status' => SigningPartyStatus::Signed, 'signed_at' => $signedAt]);
+        SigningEnvelope::whereKey($envelope->id)->update(['status' => EnvelopeStatus::Expired->value, 'expires_at' => now()->subMonths(2)]);
+
+        return $envelope;
+    }
+
+    #[Test]
+    public function expired_all_signed_envelopes_are_retried_by_the_age_of_the_last_signature(): void
+    {
+        $inside = $this->expiredAllSigned('inside@example.com', now()->subDays(13));
+        $outside = $this->expiredAllSigned('outside@example.com', now()->subDays(15));
 
         $this->sync();
 
-        $this->assertEquals(EnvelopeStatus::Completed, $recent->fresh()->status);
-        $this->assertEquals(EnvelopeStatus::Expired, $old->fresh()->status, 'En kuvert udløbet for måneder siden genbehandles ikke.');
+        $this->assertEquals(EnvelopeStatus::Completed, $inside->fresh()->status, 'Seneste underskrift for 13 dage siden: genforsøges.');
+        $this->assertEquals(EnvelopeStatus::Expired, $outside->fresh()->status, 'Seneste underskrift for 15 dage siden og ingen blokering: historik, røres ikke.');
+        $this->assertNull($outside->fresh()->last_synced_at, 'Den gamle kuvert må ikke engang slås op hos Idura.');
+    }
+
+    #[Test]
+    public function an_old_expired_envelope_with_a_failed_attempt_keeps_being_retried(): void
+    {
+        $old = $this->expiredAllSigned('old@example.com', now()->subMonths(2));
+        $old->logEvent(\Fountainhead\SigningRoom\Enums\SigningEventType::EnvelopeBlocked, metadata: ['reason' => 'completion_failed:RuntimeException:http_503']);
+
+        $this->sync();
+
+        $this->assertEquals(EnvelopeStatus::Completed, $old->fresh()->status);
     }
 }

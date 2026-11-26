@@ -3,6 +3,7 @@
 namespace Fountainhead\SigningRoom\Jobs;
 
 use Fountainhead\SigningRoom\Enums\EnvelopeStatus;
+use Fountainhead\SigningRoom\Enums\SigningEventType;
 use Fountainhead\SigningRoom\Exceptions\EnvelopeBlockedByViewerException;
 use Fountainhead\SigningRoom\Exceptions\EnvelopeOrderNotOpenException;
 use Fountainhead\SigningRoom\Models\SigningEnvelope;
@@ -31,7 +32,7 @@ class SyncIduraSignatureStatus implements ShouldQueue, ShouldBeUnique
 
     private const RECORD_BACKFILL_HOURS = 24;
 
-    /** Hvor længe efter udløb en helt underskrevet kuvert forsøges fuldført. */
+    /** Hvor gammel den seneste underskrift må være, før en udløbet, helt underskrevet kuvert uden blokering ikke længere genforsøges. */
     private const EXPIRED_RETRY_DAYS = 14;
 
     public function __construct()
@@ -54,17 +55,21 @@ class SyncIduraSignatureStatus implements ShouldQueue, ShouldBeUnique
                 // Udløbet lokalt, men alle underskrivere har underskrevet og
                 // kuverten er ikke fuldført: fuldførelsen prøves igen, så længe
                 // Idura-ordren kan lukkes (ellers rapporteres den tabte PDF).
-                // Kun hvis udløbet er nyligt (EXPIRED_RETRY_DAYS): ældre
-                // kuverter har Idura for længst lukket ned, og en host, hvor
-                // jobbene har kørt hele tiden, skal ikke have hele historikken
-                // genbehandlet ved deploy (sene mails eller en rapport pr. gammel
-                // kuvert).
+                //
+                // Afgrænset, så en host, hvor jobbene har kørt hele tiden, ikke
+                // får hele historikken genbehandlet ved deploy: kun hvis den
+                // seneste underskrift er under EXPIRED_RETRY_DAYS gammel, eller
+                // hvis kuverten har en blokering (et fejlet forsøg fra denne
+                // version), som så bliver ved med at blive prøvet, til den er
+                // fuldført eller rapporteret som tabt.
                 ->orWhere(fn ($q) => $q
                     ->where('status', EnvelopeStatus::Expired)
-                    ->where('expires_at', '>=', now()->subDays(self::EXPIRED_RETRY_DAYS))
                     ->whereNull('completed_at')
                     ->whereHas('parties', fn ($p) => $p->where('role', 'signer'))
-                    ->whereDoesntHave('parties', fn ($p) => $p->where('role', 'signer')->where('status', '!=', 'signed'))))
+                    ->whereDoesntHave('parties', fn ($p) => $p->where('role', 'signer')->where('status', '!=', 'signed'))
+                    ->where(fn ($recent) => $recent
+                        ->whereHas('parties', fn ($p) => $p->where('role', 'signer')->where('signed_at', '>=', now()->subDays(self::EXPIRED_RETRY_DAYS)))
+                        ->orWhereHas('events', fn ($e) => $e->where('event_type', SigningEventType::EnvelopeBlocked->value)))))
             ->whereNotNull('idura_signature_order_id')
             ->tap(fn ($query) => SigningEnvelope::onlyProcessable($query))
             ->get();
