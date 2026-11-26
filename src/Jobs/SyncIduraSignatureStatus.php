@@ -31,6 +31,9 @@ class SyncIduraSignatureStatus implements ShouldQueue, ShouldBeUnique
 
     private const RECORD_BACKFILL_HOURS = 24;
 
+    /** Hvor længe efter udløb en helt underskrevet kuvert forsøges fuldført. */
+    private const EXPIRED_RETRY_DAYS = 14;
+
     public function __construct()
     {
         // Standardkøen, medmindre hosten vælger en anden: en egen kø, som
@@ -51,8 +54,14 @@ class SyncIduraSignatureStatus implements ShouldQueue, ShouldBeUnique
                 // Udløbet lokalt, men alle underskrivere har underskrevet og
                 // kuverten er ikke fuldført: fuldførelsen prøves igen, så længe
                 // Idura-ordren kan lukkes (ellers rapporteres den tabte PDF).
+                // Kun hvis udløbet er nyligt (EXPIRED_RETRY_DAYS): ældre
+                // kuverter har Idura for længst lukket ned, og en host, hvor
+                // jobbene har kørt hele tiden, skal ikke have hele historikken
+                // genbehandlet ved deploy (sene mails eller en rapport pr. gammel
+                // kuvert).
                 ->orWhere(fn ($q) => $q
                     ->where('status', EnvelopeStatus::Expired)
+                    ->where('expires_at', '>=', now()->subDays(self::EXPIRED_RETRY_DAYS))
                     ->whereNull('completed_at')
                     ->whereHas('parties', fn ($p) => $p->where('role', 'signer'))
                     ->whereDoesntHave('parties', fn ($p) => $p->where('role', 'signer')->where('status', '!=', 'signed'))))

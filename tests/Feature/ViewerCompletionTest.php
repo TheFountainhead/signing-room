@@ -2075,4 +2075,24 @@ class ViewerCompletionTest extends TestCase
 
         $this->assertTrue($sent->expires_at->gt(now()->addDays(2)));
     }
+
+    #[Test]
+    public function only_recently_expired_all_signed_envelopes_are_retried(): void
+    {
+        $recent = $this->sentEnvelope([['name' => 'A', 'email' => 'a@example.com']]);
+        $this->idura->markSigned($this->party($recent, 'a@example.com')->idura_signatory_id);
+        $this->party($recent, 'a@example.com')->update(['status' => SigningPartyStatus::Signed, 'signed_at' => now()->subDays(3)]);
+        SigningEnvelope::whereKey($recent->id)->update(['status' => EnvelopeStatus::Expired->value, 'expires_at' => now()->subDays(2)]);
+
+        $this->idura->orderStatus = 'OPEN';
+        $old = $this->sentEnvelope([['name' => 'B', 'email' => 'b@example.com']]);
+        $this->idura->markSigned($this->party($old, 'b@example.com')->idura_signatory_id);
+        $this->party($old, 'b@example.com')->update(['status' => SigningPartyStatus::Signed, 'signed_at' => now()->subMonths(4)]);
+        SigningEnvelope::whereKey($old->id)->update(['status' => EnvelopeStatus::Expired->value, 'expires_at' => now()->subMonths(3)]);
+
+        $this->sync();
+
+        $this->assertEquals(EnvelopeStatus::Completed, $recent->fresh()->status);
+        $this->assertEquals(EnvelopeStatus::Expired, $old->fresh()->status, 'En kuvert udløbet for måneder siden genbehandles ikke.');
+    }
 }
