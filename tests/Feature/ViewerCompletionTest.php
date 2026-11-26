@@ -2450,4 +2450,22 @@ class ViewerCompletionTest extends TestCase
         $this->assertSame($calls + 1, $this->idura->orderStatusCalls, 'Anden kørsel samme dag: ingen ny daglig runde.');
         $this->assertSame(1, $envelope->events()->where('event_type', 'envelope.blocked')->count(), 'Ingen ny rapport.');
     }
+
+    #[Test]
+    public function a_run_that_fails_as_a_whole_gives_the_daily_retry_back(): void
+    {
+        $this->inDailySlot();
+        $key = SyncIduraSignatureStatus::DAILY_RETRY_CACHE_KEY.':'.now()->toDateString();
+        // Forespørgslen fejler samlet (her: events-tabellen mangler).
+        \Illuminate\Support\Facades\Schema::drop('signing_events');
+
+        try {
+            $this->sync();
+            $this->fail('Forventede, at kørslen fejlede.');
+        } catch (\Illuminate\Database\QueryException) {
+            // forventet
+        }
+
+        $this->assertFalse(\Illuminate\Support\Facades\Cache::has($key), 'Næste kørsel skal kunne tage dagens runde.');
+    }
 }

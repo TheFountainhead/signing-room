@@ -56,6 +56,8 @@ class SyncIduraSignatureStatus implements ShouldQueue, ShouldBeUnique
     /** Afgjort én gang pr. kørsel i handle(), så en kørsel over et timeskift er konsistent. */
     private bool $dailyRetry = false;
 
+    private string $dailyRetryKey = '';
+
     /** Idura-ordren er udløbet eller annulleret: kan ikke lukkes, polles ikke. */
     private const FINAL_ORDER_BLOCKS = ['idura_order_expired', 'idura_order_cancelled'];
 
@@ -75,6 +77,21 @@ class SyncIduraSignatureStatus implements ShouldQueue, ShouldBeUnique
 
         $this->dailyRetry = $this->claimDailyRetry();
 
+        try {
+            $this->syncAll($idura, $service);
+        } catch (\Throwable $e) {
+            // Kørslen fejlede samlet (fx forespørgslen): giv dagens runde fri,
+            // så næste kørsel tager den. Fejl pr. kuvert fanges i syncAll().
+            if ($this->dailyRetry) {
+                $this->releaseDailyRetry();
+            }
+
+            throw $e;
+        }
+    }
+
+    private function syncAll(IduraSignatureService $idura, SigningRoomService $service): void
+    {
         $envelopes = SigningEnvelope::query()
             ->where(fn ($q) => $q
                 ->whereIn('status', [EnvelopeStatus::Sent, EnvelopeStatus::PartiallySigned])
@@ -86,7 +103,9 @@ class SyncIduraSignatureStatus implements ShouldQueue, ShouldBeUnique
                 // døgnet også ved en blokering eller en gammel kopimodtager i
                 // den aktuelle runde. isRetryableExpired() afgør præcist.
                 // Det, der springes over, er kun historik uden blokering, som
-                // den gamle sync heller aldrig rørte.
+                // sync før #20 heller aldrig rørte (den tog kun Sent/
+                // PartiallySigned). Bevidst: ingen sene fuldførelses-mails og
+                // ingen rapport pr. historisk kuvert ved deploy.
                 ->orWhere(fn ($q) => $q
                     ->where('status', EnvelopeStatus::Expired)
                     ->whereNull('completed_at')
@@ -306,10 +325,21 @@ class SyncIduraSignatureStatus implements ShouldQueue, ShouldBeUnique
             return false;
         }
 
+        $this->dailyRetryKey = self::DAILY_RETRY_CACHE_KEY.':'.now()->toDateString();
+
         try {
-            return Cache::add(self::DAILY_RETRY_CACHE_KEY.':'.now()->toDateString(), true, now()->addDay());
+            return Cache::add($this->dailyRetryKey, true, now()->addDay());
         } catch (\Throwable) {
             return false;
+        }
+    }
+
+    private function releaseDailyRetry(): void
+    {
+        try {
+            Cache::forget($this->dailyRetryKey);
+        } catch (\Throwable) {
+            // Uden cache er der ingen markør at give fri.
         }
     }
 
