@@ -12,7 +12,7 @@ use Fountainhead\SigningRoom\Notifications\DocumentReadyNotification;
 use Fountainhead\SigningRoom\Notifications\EnvelopeCompletedNotification;
 use Fountainhead\SigningRoom\Notifications\PartyRejectedNotification;
 use Fountainhead\SigningRoom\Notifications\PartySignedNotification;
-use Fountainhead\SigningRoom\Events\PartySignedEvent;
+use Fountainhead\SigningRoom\Jobs\DispatchPartySignedEvent;
 use Fountainhead\SigningRoom\Exceptions\EnvelopeHasNoSignerException;
 use Fountainhead\SigningRoom\Exceptions\EnvelopeOrderNotOpenException;
 use Fountainhead\SigningRoom\Exceptions\SignedDocumentUnavailableException;
@@ -170,7 +170,12 @@ class SigningRoomService
     /**
      * Handle a party signing event from the webhook.
      */
-    public function handleSigned(SigningParty $party, ?array $signatureData = null): bool
+    /**
+     * @param  bool  $progress  false: registrér kun underskriften (CPR, event),
+     *     uden rundeskift, fuldførelse eller mails. Bruges, når Idura-ordren er
+     *     udløbet eller annulleret, men underskriften blev givet før.
+     */
+    public function handleSigned(SigningParty $party, ?array $signatureData = null, bool $progress = true): bool
     {
         // Claim underskriften atomisk. En gentaget webhook og sync-jobbet kan
         // behandle samme part samtidig; kun den der faktisk flytter rækken til
@@ -197,7 +202,7 @@ class SigningRoomService
 
         // Annulleret eller udløbet: underskriften registreres, men kuverten
         // rykkes, fuldføres og mailes ikke.
-        if (in_array($envelope->status, [EnvelopeStatus::Cancelled, EnvelopeStatus::Expired], true)) {
+        if (! $progress || in_array($envelope->status, [EnvelopeStatus::Cancelled, EnvelopeStatus::Expired], true)) {
             return true;
         }
 
@@ -285,7 +290,16 @@ class SigningRoomService
 
         $envelope->logEvent(SigningEventType::PartySigned, $party);
 
-        PartySignedEvent::dispatch($envelope, $party, $backfilled);
+        // Via køen: fejler en host-listener, forsøges det igen og ender i
+        // failed_jobs i stedet for at gå tabt (party.signed er allerede
+        // logget, så recordSignature affyrer ikke igen). Med sync-køen kaster
+        // jobbet med det samme; så rapporteres fejlen, og underskriften
+        // behandles færdig.
+        try {
+            DispatchPartySignedEvent::dispatch($envelope, $party, $backfilled);
+        } catch (\Throwable $e) {
+            report($e);
+        }
     }
 
     /**
@@ -571,7 +585,16 @@ class SigningRoomService
             $reason .= ':graphql';
         }
 
-        return $reason;
+        // Beskeden normaliseret: id'er, tal og uuid'er fjernet, så skiftende
+        // request-id'er giver samme nøgle, men forskellige fejl af samme
+        // klasse (fx disk-fejl vs. utilgængelig PDF) ikke slås sammen.
+        $normalized = preg_replace(
+            ['/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i', '/\b[0-9a-f]{16,}\b/i', '/\d+/'],
+            ['<uuid>', '<hex>', '#'],
+            $e->getMessage(),
+        );
+
+        return $reason . ':' . substr(sha1((string) $normalized), 0, 12);
     }
 
     /**

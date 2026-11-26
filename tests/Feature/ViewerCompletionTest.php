@@ -999,8 +999,9 @@ class ViewerCompletionTest extends TestCase
     }
 
     #[Test]
-    public function a_cancelled_order_is_checked_before_any_signature_is_handled(): void
+    public function a_cancelled_order_records_signatures_but_advances_nothing(): void
     {
+        \Illuminate\Support\Facades\Event::fake([\Fountainhead\SigningRoom\Events\PartySignedEvent::class]);
         Exceptions::fake();
 
         $envelope = $this->sentEnvelope([
@@ -1014,14 +1015,17 @@ class ViewerCompletionTest extends TestCase
         $this->sync();
         $this->sync();
 
-        $this->assertNotEquals(SigningPartyStatus::Signed, $r1->fresh()->status);
+        // Underskriften blev givet før annulleringen: den registreres (én gang).
+        $this->assertEquals(SigningPartyStatus::Signed, $r1->fresh()->status);
+        $this->assertSame(1, $envelope->events()->where('event_type', 'party.signed')->count());
+        \Illuminate\Support\Facades\Event::assertDispatchedTimes(\Fountainhead\SigningRoom\Events\PartySignedEvent::class, 1);
         $this->assertSame(1, $envelope->fresh()->current_round);
         Notification::assertNotSentTo($this->party($envelope, 'r2@example.com'), DocumentReadyNotification::class);
         Exceptions::assertReportedCount(1);
     }
 
     #[Test]
-    public function an_expired_order_is_marked_expired_without_handling_signatures(): void
+    public function an_expired_order_is_marked_expired_and_records_signatures_made_before_expiry(): void
     {
         $envelope = $this->sentEnvelope([['name' => 'A', 'email' => 'a@example.com']]);
         $a = $this->party($envelope, 'a@example.com');
@@ -1031,8 +1035,10 @@ class ViewerCompletionTest extends TestCase
         $this->sync();
 
         $this->assertEquals(EnvelopeStatus::Expired, $envelope->fresh()->status);
-        $this->assertNotEquals(SigningPartyStatus::Signed, $a->fresh()->status);
+        $this->assertEquals(SigningPartyStatus::Signed, $a->fresh()->status, 'Underskriften fra før udløb skal registreres.');
+        $this->assertSame(1, $envelope->events()->where('event_type', 'party.signed')->count());
         $this->assertSame(0, $this->idura->closeCalls);
+        Notification::assertNotSentTo($a, EnvelopeCompletedNotification::class);
     }
 
     #[Test]
@@ -1198,5 +1204,54 @@ class ViewerCompletionTest extends TestCase
 
         \Illuminate\Support\Facades\Event::assertDispatchedTimes(\Fountainhead\SigningRoom\Events\PartySignedEvent::class, 1);
         \Illuminate\Support\Facades\Event::assertDispatched(\Fountainhead\SigningRoom\Events\PartySignedEvent::class, fn ($e) => $e->party->email === 'recent@example.com' && $e->backfilled === true);
+    }
+
+    #[Test]
+    public function a_failing_host_listener_does_not_lose_the_signature_or_the_round(): void
+    {
+        Exceptions::fake();
+
+        $envelope = $this->sentEnvelope([
+            ['name' => 'R1', 'email' => 'r1@example.com', 'signing_round' => 1],
+            ['name' => 'R2', 'email' => 'r2@example.com', 'signing_round' => 2],
+        ]);
+
+        \Illuminate\Support\Facades\Event::listen(\Fountainhead\SigningRoom\Events\PartySignedEvent::class, function () {
+            throw new \RuntimeException('Host-listener fejlede');
+        });
+
+        $this->sign($this->party($envelope, 'r1@example.com'));
+
+        Exceptions::assertReported(fn (\RuntimeException $e) => $e->getMessage() === 'Host-listener fejlede');
+        $this->assertSame(2, $envelope->fresh()->current_round, 'Underskriften skal behandles færdig.');
+        Notification::assertSentTo($this->party($envelope, 'r2@example.com'), DocumentReadyNotification::class);
+    }
+
+    #[Test]
+    public function the_signed_event_goes_through_the_queue_so_a_failure_can_be_retried(): void
+    {
+        \Illuminate\Support\Facades\Queue::fake();
+
+        $envelope = $this->sentEnvelope([['name' => 'A', 'email' => 'a@example.com'], ['name' => 'B', 'email' => 'b@example.com']]);
+        $this->sign($this->party($envelope, 'a@example.com'));
+
+        \Illuminate\Support\Facades\Queue::assertPushed(\Fountainhead\SigningRoom\Jobs\DispatchPartySignedEvent::class, fn ($job) => $job->party->email === 'a@example.com'
+            && $job->queue === null
+            && $job->tries === 3);
+    }
+
+    #[Test]
+    public function different_failures_of_the_same_class_get_their_own_report_but_varying_ids_do_not(): void
+    {
+        $diskFailure = new \RuntimeException('Kunne ikke gemme signeret PDF for kuvert 9f1c2d3e-0000-4000-8000-000000000001 på sti signing-room/9f1c2d3e-0000-4000-8000-000000000001/signed.pdf.');
+        $otherDisk = new \RuntimeException('Kunne ikke gemme signeret PDF for kuvert 0a1b2c3d-1111-4000-8000-000000000002 på sti signing-room/0a1b2c3d-1111-4000-8000-000000000002/signed.pdf.');
+        $somethingElse = new \RuntimeException('Uventet svar fra Idura: dokumentliste mangler');
+
+        $this->assertSame(SigningRoomService::completionFailureReason($diskFailure), SigningRoomService::completionFailureReason($otherDisk));
+        $this->assertNotSame(SigningRoomService::completionFailureReason($diskFailure), SigningRoomService::completionFailureReason($somethingElse));
+
+        $a = new \RuntimeException('Idura API request failed with status 503: unavailable (request 1)');
+        $b = new \RuntimeException('Idura API request failed with status 503: unavailable (request 2)');
+        $this->assertSame(SigningRoomService::completionFailureReason($a), SigningRoomService::completionFailureReason($b));
     }
 }

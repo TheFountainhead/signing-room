@@ -53,11 +53,14 @@ class SyncIduraSignatureStatus implements ShouldQueue
         $order = $idura->getOrderStatus($envelope->idura_signature_order_id);
 
         // Ordrens status FØR underskrifterne behandles: for en udløbet eller
-        // annulleret ordre må intet rykkes, fuldføres eller mailes.
+        // annulleret ordre må intet rykkes, fuldføres eller mailes. Men
+        // underskrifter givet før udløb/annullering registreres.
         if ($order['status'] === 'EXPIRED') {
             if ($envelope->status !== EnvelopeStatus::Expired) {
                 $envelope->update(['status' => EnvelopeStatus::Expired]);
             }
+
+            $this->recordSignaturesOnly($envelope, $order, $service);
 
             return;
         }
@@ -67,6 +70,8 @@ class SyncIduraSignatureStatus implements ShouldQueue
                 "Kuvert {$envelope->id} ({$envelope->uuid}): Idura-ordren {$envelope->idura_signature_order_id} er {$order['status']}, "
                 . 'men kuverten er stadig åben her. Afgør manuelt, om den skal annulleres eller sendes igen.'
             ), ['idura_status' => $order['status']]);
+
+            $this->recordSignaturesOnly($envelope, $order, $service);
 
             return;
         }
@@ -141,6 +146,27 @@ class SyncIduraSignatureStatus implements ShouldQueue
         $service->notifyRoundParties($envelope, $envelope->current_round);
 
         $this->reportLegacyViewerBlockOnce($envelope);
+    }
+
+    /**
+     * Underskrifter, Idura har som SIGNED, registreres uden rundeskift,
+     * fuldførelse eller mails.
+     */
+    private function recordSignaturesOnly(SigningEnvelope $envelope, array $order, SigningRoomService $service): void
+    {
+        foreach ($order['signatories'] ?? [] as $iduraSignatory) {
+            if ($iduraSignatory['status'] !== 'SIGNED') {
+                continue;
+            }
+
+            $party = $envelope->parties()
+                ->where('idura_signatory_id', $iduraSignatory['id'])
+                ->first();
+
+            if ($party && $party->status->value !== 'signed') {
+                $service->handleSigned($party, ['synced_from_polling' => true], progress: false);
+            }
+        }
     }
 
     /**
