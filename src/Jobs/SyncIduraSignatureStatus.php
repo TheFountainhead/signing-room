@@ -9,16 +9,25 @@ use Fountainhead\SigningRoom\Models\SigningEnvelope;
 use Fountainhead\SigningRoom\Services\IduraSignatureService;
 use Fountainhead\SigningRoom\Services\SigningRoomService;
 use Illuminate\Bus\Queueable;
+use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Support\Facades\Schema;
 
-class SyncIduraSignatureStatus implements ShouldQueue
+/**
+ * ShouldBeUnique: to kørsler må ikke overlappe (fx en Horizon-kø med
+ * efterslæb, der tømmes af to workers), så de ikke behandler samme kuvert
+ * samtidig.
+ */
+class SyncIduraSignatureStatus implements ShouldQueue, ShouldBeUnique
 {
     use Dispatchable, InteractsWithQueue, Queueable;
 
     private const RECORD_GRACE_MINUTES = 5;
+
+    /** Låsen udløber, hvis en kørsel dør, så næste time kan køre. */
+    public int $uniqueFor = 3600;
 
     private const RECORD_BACKFILL_HOURS = 24;
 

@@ -45,7 +45,10 @@ class DispatchPartySignedEvent implements ShouldQueue
         public SigningEnvelope $envelope,
         public SigningParty $party,
         public bool $backfilled = false,
-    ) {}
+    ) {
+        // Samme kø som pakkens øvrige jobs (null = standardkøen).
+        $this->onQueue(config('signing-room.queue'));
+    }
 
     public function handle(): void
     {

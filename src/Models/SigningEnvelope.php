@@ -172,6 +172,11 @@ class SigningEnvelope extends Model
         return $logged;
     }
 
+    public function hasRejectedSigner(): bool
+    {
+        return $this->parties()->where('role', 'signer')->where('status', 'rejected')->exists();
+    }
+
     public function isAllRoundsComplete(): bool
     {
         // Mindst én underskriver: en kuvert med kun kopimodtagere må aldrig

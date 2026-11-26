@@ -1701,4 +1701,49 @@ class ViewerCompletionTest extends TestCase
         \Illuminate\Support\Facades\Event::assertNotDispatched(\Fountainhead\SigningRoom\Events\PartySignedEvent::class);
         $this->assertSame(1, $envelope->events()->where('event_type', 'party.signed')->where('signing_party_id', $a->id)->count());
     }
+
+    #[Test]
+    public function a_polled_signature_of_unknown_age_does_not_mail_the_creator_either(): void
+    {
+        config(['signing-room.notifications.party_signed' => true]);
+        $creator = $this->creator();
+
+        $envelope = $this->sentEnvelope([['name' => 'A', 'email' => 'a@example.com'], ['name' => 'B', 'email' => 'b@example.com']], $creator->id);
+        SigningEnvelope::whereKey($envelope->id)->update(['created_at' => now()->subDays(40), 'last_synced_at' => null]);
+        $this->idura->markSigned($this->party($envelope, 'a@example.com')->idura_signatory_id);
+
+        $this->sync();
+
+        Notification::assertNotSentTo($creator, PartySignedNotification::class);
+    }
+
+    #[Test]
+    public function after_a_rejection_the_creator_is_not_told_to_wait_for_all_signatures(): void
+    {
+        config(['signing-room.notifications.party_signed' => true]);
+        $creator = $this->creator();
+
+        $envelope = $this->sentEnvelope([
+            ['name' => 'A', 'email' => 'a@example.com'],
+            ['name' => 'B', 'email' => 'b@example.com'],
+            ['name' => 'C', 'email' => 'c@example.com'],
+        ], $creator->id);
+
+        $this->service->handleRejected($this->party($envelope, 'a@example.com'), 'Nej');
+        $this->sign($this->party($envelope, 'b@example.com'));
+
+        Notification::assertNotSentTo($creator, PartySignedNotification::class);
+    }
+
+    #[Test]
+    public function the_sync_job_cannot_overlap_and_the_event_job_uses_the_package_queue(): void
+    {
+        $this->assertInstanceOf(\Illuminate\Contracts\Queue\ShouldBeUnique::class, new SyncIduraSignatureStatus);
+
+        config(['signing-room.queue' => 'signing-room']);
+        $envelope = $this->sentEnvelope([['name' => 'A', 'email' => 'a@example.com']]);
+        $job = new \Fountainhead\SigningRoom\Jobs\DispatchPartySignedEvent($envelope, $this->party($envelope, 'a@example.com'));
+
+        $this->assertSame('signing-room', $job->queue);
+    }
 }

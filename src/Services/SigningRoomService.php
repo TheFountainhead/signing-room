@@ -252,7 +252,11 @@ class SigningRoomService
         // Først når kuvertens tilstand er opdateret: en fejlende mail må ikke
         // efterlade kuverten uden rundeskift. Slået fra som standard, se
         // signing-room.notifications.party_signed.
-        if (config('signing-room.notifications.party_signed', false)) {
+        // Ikke for en underskrift af ukendt alder (fundet ved polling): den
+        // skal ikke meldes som ny. Heller ikke når en part har afvist: så
+        // bliver kuverten aldrig færdig, og "Du får besked, når alle parter
+        // har underskrevet" er usandt.
+        if (config('signing-room.notifications.party_signed', false) && $dispatchEvent && ! $envelope->hasRejectedSigner()) {
             try {
                 $notification = PartySignedNotification::forParty($envelope, $party);
 
@@ -288,12 +292,7 @@ class SigningRoomService
     {
         $envelope = $party->envelope;
 
-        $alreadyRecorded = $envelope->events()
-            ->where('event_type', SigningEventType::PartySigned->value)
-            ->where('signing_party_id', $party->getKey())
-            ->exists();
-
-        if ($alreadyRecorded) {
+        if ($this->hasRecordedSignature($envelope, $party)) {
             return;
         }
 
@@ -312,7 +311,24 @@ class SigningRoomService
             }
         }
 
-        $envelope->logEvent(SigningEventType::PartySigned, $party, $dispatchEvent ? null : ['event_skipped' => 'unknown_age']);
+        // Tjek og party.signed under en kort rækkelås på parten: to
+        // sync-kørsler (eller sync og webhook), der indhenter samme
+        // underskrift samtidig, må ikke begge affyre eventet (host-fakturering).
+        $logged = DB::transaction(function () use ($envelope, $party, $dispatchEvent) {
+            SigningParty::query()->whereKey($party->getKey())->lockForUpdate()->first();
+
+            if ($this->hasRecordedSignature($envelope, $party)) {
+                return false;
+            }
+
+            $envelope->logEvent(SigningEventType::PartySigned, $party, $dispatchEvent ? null : ['event_skipped' => 'unknown_age']);
+
+            return true;
+        });
+
+        if (! $logged) {
+            return;
+        }
 
         if (! $dispatchEvent) {
             \Illuminate\Support\Facades\Log::warning('signing-room: underskrift registreret uden PartySignedEvent (fundet ved polling, ukendt alder). Tjek om host-listeners (fx fakturering) skal have den.', [
@@ -409,6 +425,14 @@ class SigningRoomService
         $envelope->logEvent(SigningEventType::EnvelopeExpired);
 
         return true;
+    }
+
+    private function hasRecordedSignature(SigningEnvelope $envelope, SigningParty $party): bool
+    {
+        return $envelope->events()
+            ->where('event_type', SigningEventType::PartySigned->value)
+            ->where('signing_party_id', $party->getKey())
+            ->exists();
     }
 
     /**
