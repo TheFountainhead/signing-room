@@ -48,8 +48,9 @@ class SyncIduraSignatureStatus implements ShouldQueue, ShouldBeUnique
      * i døgnet, hvis den har en åben blokering, der ikke er endelig, eller en
      * gammel kopimodtager i den aktuelle runde. En forbigående fejl, der rettes
      * efter vinduet (fx en disk), samles altså stadig op, uden at kuverten
-     * polles hver time uden ende. Den første kørsel fra kl. 04 hver dag tager
-     * det (markør i cachen), så en tabt kørsel kl. 04 overtages kl. 05.
+     * polles hver time uden ende. Kørsler fra kl. 04 tager runden, indtil en
+     * af dem er gennemført (markør i cachen); en tabt, fejlet eller dræbt
+     * kørsel kl. 04 overtages altså kl. 05.
      */
     private const DAILY_RETRY_HOUR = 4;
 
@@ -77,18 +78,15 @@ class SyncIduraSignatureStatus implements ShouldQueue, ShouldBeUnique
             return;
         }
 
-        $this->dailyRetry = $this->claimDailyRetry();
+        $this->dailyRetry = $this->isDailyRetryDue();
 
-        try {
-            $this->syncAll($idura, $service);
-        } catch (\Throwable $e) {
-            // Kørslen fejlede samlet (fx forespørgslen): giv dagens runde fri,
-            // så næste kørsel tager den. Fejl pr. kuvert fanges i syncAll().
-            if ($this->dailyRetry) {
-                $this->releaseDailyRetry();
-            }
+        $this->syncAll($idura, $service);
 
-            throw $e;
+        // Først når kørslen er færdig: en kørsel, der fejler eller bliver
+        // dræbt (fx worker-timeout), efterlader ingen markør, så næste kørsel
+        // tager runden. ShouldBeUnique forhindrer to samtidige kørsler.
+        if ($this->dailyRetry) {
+            $this->markDailyRetryDone();
         }
     }
 
@@ -334,10 +332,10 @@ class SyncIduraSignatureStatus implements ShouldQueue, ShouldBeUnique
     }
 
     /**
-     * Den første kørsel fra DAILY_RETRY_HOUR hver dag får den daglige runde.
-     * Uden cache springes den over (næste kørsel prøver igen).
+     * Den daglige runde mangler i dag, og klokken er DAILY_RETRY_HOUR eller
+     * senere. Uden cache springes den over (næste kørsel prøver igen).
      */
-    private function claimDailyRetry(): bool
+    private function isDailyRetryDue(): bool
     {
         if (now()->hour < self::DAILY_RETRY_HOUR) {
             return false;
@@ -346,18 +344,18 @@ class SyncIduraSignatureStatus implements ShouldQueue, ShouldBeUnique
         $this->dailyRetryKey = self::DAILY_RETRY_CACHE_KEY.':'.now()->toDateString();
 
         try {
-            return Cache::add($this->dailyRetryKey, true, now()->addDay());
+            return ! Cache::has($this->dailyRetryKey);
         } catch (\Throwable) {
             return false;
         }
     }
 
-    private function releaseDailyRetry(): void
+    private function markDailyRetryDone(): void
     {
         try {
-            Cache::forget($this->dailyRetryKey);
+            Cache::put($this->dailyRetryKey, true, now()->addDay());
         } catch (\Throwable) {
-            // Uden cache er der ingen markør at give fri.
+            // Uden cache: næste kørsel tager runden igen (højst en gang i timen).
         }
     }
 

@@ -2483,4 +2483,52 @@ class ViewerCompletionTest extends TestCase
 
         $this->assertSame($calls, $this->idura->orderStatusCalls, 'Egne sync-fejl er ikke aktivitet: ikke hver time.');
     }
+
+    private function remind(): void
+    {
+        (new \Fountainhead\SigningRoom\Jobs\SendSigningReminders)->handle();
+    }
+
+    #[Test]
+    public function a_freshly_sent_envelope_is_not_reminded_the_same_day(): void
+    {
+        // Sendt kl. 08:55, påmindelsesjobbet kører kl. 09:00: last_reminder_at
+        // er tom, men parten fik sin mail for fem minutter siden.
+        $envelope = $this->sentEnvelope([['name' => 'Ny', 'email' => 'fresh@example.com']]);
+        SigningEnvelope::whereKey($envelope->id)->update(['reminder_interval' => 7, 'last_reminder_at' => null]);
+
+        $this->remind();
+
+        Notification::assertNotSentTo($this->party($envelope, 'fresh@example.com'), \Fountainhead\SigningRoom\Notifications\SigningReminderNotification::class);
+    }
+
+    #[Test]
+    public function a_signer_is_reminded_once_the_interval_since_the_last_mail_has_passed(): void
+    {
+        $envelope = $this->sentEnvelope([
+            ['name' => 'Gammel', 'email' => 'due@example.com'],
+            ['name' => 'Manuelt mindet', 'email' => 'manual@example.com'],
+        ]);
+        SigningEnvelope::whereKey($envelope->id)->update(['reminder_interval' => 7, 'last_reminder_at' => now()->subDays(30)]);
+        $this->party($envelope, 'due@example.com')->update(['notified_at' => now()->subDays(8)]);
+        // Manuel påmindelse for en time siden: kun notified_at er sat.
+        $this->party($envelope, 'manual@example.com')->update(['notified_at' => now()->subHour()]);
+
+        $this->remind();
+
+        Notification::assertSentToTimes($this->party($envelope, 'due@example.com'), \Fountainhead\SigningRoom\Notifications\SigningReminderNotification::class, 1);
+        Notification::assertNotSentTo($this->party($envelope, 'manual@example.com'), \Fountainhead\SigningRoom\Notifications\SigningReminderNotification::class);
+    }
+
+    #[Test]
+    public function an_envelope_reminded_within_its_interval_is_left_alone(): void
+    {
+        $envelope = $this->sentEnvelope([['name' => 'Interval', 'email' => 'interval@example.com']]);
+        SigningEnvelope::whereKey($envelope->id)->update(['reminder_interval' => 7, 'last_reminder_at' => now()->subDays(3)]);
+        $this->party($envelope, 'interval@example.com')->update(['notified_at' => now()->subDays(8)]);
+
+        $this->remind();
+
+        Notification::assertNotSentTo($this->party($envelope, 'interval@example.com'), \Fountainhead\SigningRoom\Notifications\SigningReminderNotification::class);
+    }
 }

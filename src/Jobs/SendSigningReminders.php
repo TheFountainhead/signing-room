@@ -37,11 +37,11 @@ class SendSigningReminders implements ShouldQueue
             ->where(function ($q) {
                 $q->whereNull('expires_at')->orWhere('expires_at', '>', now());
             })
-            ->where(function ($q) {
-                $q->whereNull('last_reminder_at')
-                    ->orWhereRaw('last_reminder_at <= NOW() - INTERVAL reminder_interval DAY');
-            })
-            ->get();
+            ->get()
+            // Intervallet i PHP, ikke som MySQL-SQL (NOW() - INTERVAL ... DAY),
+            // som hverken SQLite eller PostgreSQL forstår.
+            ->filter(fn (SigningEnvelope $envelope) => $envelope->last_reminder_at === null
+                || $envelope->last_reminder_at->lte(now()->subDays((int) $envelope->reminder_interval)));
 
         foreach ($envelopes as $envelope) {
             // Idura-ordren er annulleret, udløbet eller ukendt: ingen påmindelse
@@ -62,6 +62,13 @@ class SendSigningReminders implements ShouldQueue
             foreach ($unsignedParties as $party) {
                 $maxReminders = config('signing-room.defaults.max_reminders', 3);
                 if ($party->reminder_count >= $maxReminders) {
+                    continue;
+                }
+
+                // Ikke før der er gået et interval siden partens seneste mail:
+                // last_reminder_at er tom for en nyligt sendt kuvert, og en
+                // manuel påmindelse sætter kun notified_at.
+                if ($party->notified_at->gt(now()->subDays((int) $envelope->reminder_interval))) {
                     continue;
                 }
 
