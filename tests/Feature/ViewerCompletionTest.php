@@ -2521,15 +2521,44 @@ class ViewerCompletionTest extends TestCase
     }
 
     #[Test]
-    public function an_envelope_reminded_within_its_interval_is_left_alone(): void
+    public function reminding_one_signer_does_not_hold_back_another_who_was_skipped(): void
     {
-        $envelope = $this->sentEnvelope([['name' => 'Interval', 'email' => 'interval@example.com']]);
-        SigningEnvelope::whereKey($envelope->id)->update(['reminder_interval' => 7, 'last_reminder_at' => now()->subDays(3)]);
-        $this->party($envelope, 'interval@example.com')->update(['notified_at' => now()->subDays(8)]);
+        $this->travelTo(now()->startOfDay()->setHour(9));
+        $envelope = $this->sentEnvelope([
+            ['name' => 'A', 'email' => 'a@example.com'],
+            ['name' => 'B', 'email' => 'b@example.com'],
+        ]);
+        SigningEnvelope::whereKey($envelope->id)->update(['reminder_interval' => 7, 'last_reminder_at' => now()->subDays(30)]);
+        $this->party($envelope, 'a@example.com')->update(['notified_at' => now()->subDays(8)]);
+        // B fik en manuel påmindelse for fire dage siden.
+        $this->party($envelope, 'b@example.com')->update(['notified_at' => now()->subDays(4)]);
 
         $this->remind();
+        Notification::assertSentToTimes($this->party($envelope, 'a@example.com'), \Fountainhead\SigningRoom\Notifications\SigningReminderNotification::class, 1);
+        Notification::assertNotSentTo($this->party($envelope, 'b@example.com'), \Fountainhead\SigningRoom\Notifications\SigningReminderNotification::class);
 
-        Notification::assertNotSentTo($this->party($envelope, 'interval@example.com'), \Fountainhead\SigningRoom\Notifications\SigningReminderNotification::class);
+        // Tre dage senere er B forfalden, selv om A blev mindet.
+        $this->travel(3)->days();
+        $this->remind();
+
+        Notification::assertSentToTimes($this->party($envelope, 'b@example.com'), \Fountainhead\SigningRoom\Notifications\SigningReminderNotification::class, 1);
+        Notification::assertSentToTimes($this->party($envelope, 'a@example.com'), \Fountainhead\SigningRoom\Notifications\SigningReminderNotification::class, 1);
+    }
+
+    #[Test]
+    public function a_reminder_written_seconds_into_the_last_run_is_due_exactly_one_interval_later(): void
+    {
+        // Sidste mail kl. 09:00:03; jobbet kører igen kl. 09:00:00 efter
+        // præcis intervallet. Interval 1 = hver dag, ikke hver anden.
+        $this->travelTo(now()->startOfDay()->setTime(9, 0, 3));
+        $envelope = $this->sentEnvelope([['name' => 'Dagligt', 'email' => 'daily-r@example.com']]);
+        SigningEnvelope::whereKey($envelope->id)->update(['reminder_interval' => 1, 'last_reminder_at' => now()]);
+        $this->party($envelope, 'daily-r@example.com')->update(['notified_at' => now()]);
+
+        $this->travelTo(now()->addDay()->setTime(9, 0, 0));
+        $this->remind();
+
+        Notification::assertSentToTimes($this->party($envelope, 'daily-r@example.com'), \Fountainhead\SigningRoom\Notifications\SigningReminderNotification::class, 1);
     }
 
     #[Test]

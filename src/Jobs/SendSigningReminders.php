@@ -37,11 +37,15 @@ class SendSigningReminders implements ShouldQueue
             ->where(function ($q) {
                 $q->whereNull('expires_at')->orWhere('expires_at', '>', now());
             })
-            ->get()
-            // Intervallet i PHP, ikke som MySQL-SQL (NOW() - INTERVAL ... DAY),
-            // som hverken SQLite eller PostgreSQL forstår.
-            ->filter(fn (SigningEnvelope $envelope) => $envelope->last_reminder_at === null
-                || $envelope->last_reminder_at->lte(now()->subDays((int) $envelope->reminder_interval)));
+            // Grovfilter: kun kuverter med en underskriver, der sidst fik mail
+            // før i dag. Intervallet afgøres pr. part nedenfor (ikke med
+            // MySQL-SQL som NOW() - INTERVAL ... DAY, som SQLite og PostgreSQL
+            // ikke forstår).
+            ->whereHas('parties', fn ($p) => $p
+                ->where('role', 'signer')
+                ->whereNotNull('notified_at')
+                ->where('notified_at', '<', now()->startOfDay()))
+            ->get();
 
         foreach ($envelopes as $envelope) {
             // Idura-ordren er annulleret, udløbet eller ukendt: ingen påmindelse
@@ -67,10 +71,12 @@ class SendSigningReminders implements ShouldQueue
                     continue;
                 }
 
-                // Ikke før der er gået et interval siden partens seneste mail:
-                // last_reminder_at er tom for en nyligt sendt kuvert, og en
-                // manuel påmindelse sætter kun notified_at.
-                if ($party->notified_at->gt(now()->subDays((int) $envelope->reminder_interval))) {
+                // Pr. part: først når der er gået reminder_interval dage (på
+                // datoen, ikke klokkeslættet, så jobbet kl. 09 ikke rammer et
+                // par sekunder for tidligt) siden partens seneste mail. Dækker
+                // en nyligt sendt kuvert, en manuel påmindelse og en runde-mail
+                // midt i intervallet, uden at holde andre parter tilbage.
+                if (! self::isDue($party->notified_at, (int) $envelope->reminder_interval)) {
                     continue;
                 }
 
@@ -81,12 +87,16 @@ class SendSigningReminders implements ShouldQueue
                 $reminded = true;
             }
 
-            // Kun når nogen faktisk blev mindet: ellers holder kuvertens
-            // interval en part tilbage, som blev sprunget over, fordi den lige
-            // havde fået en mail, i næsten to intervaller.
+            // Kun til orientering: intervallet styres pr. part (notified_at).
             if ($reminded) {
                 $envelope->update(['last_reminder_at' => now()]);
             }
         }
+    }
+
+    private static function isDue(\DateTimeInterface $notifiedAt, int $interval): bool
+    {
+        return \Illuminate\Support\Carbon::instance($notifiedAt)->startOfDay()
+            ->lte(now()->startOfDay()->subDays(max(1, $interval)));
     }
 }
