@@ -48,6 +48,10 @@ return [
         'webhook_middleware' => ['api'],
     ],
 
+    // Kø til pakkens planlagte jobs (sync, påmindelser, udløb). null =
+    // standardkøen. Sæt kun en egen kø, hvis en worker lytter på den.
+    'queue' => env('SIGNING_ROOM_QUEUE'),
+
     'notifications' => [
         // PartySignedNotification til afsenderen ved hver underskrift, før
         // kuverten er færdig. Slået fra som standard, fordi hosts der selv

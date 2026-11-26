@@ -107,12 +107,14 @@ class FakeIdura extends IduraSignatureService
         return [
             'id' => $orderId,
             'status' => 'CLOSED',
-            'documents' => [['id' => 'Document:1', 'title' => 'x', 'blob' => base64_encode('%PDF-1.4 signeret')]],
+            'documents' => [['id' => 'Document:1', 'title' => 'x', 'blob' => $this->closeWithoutBlob ? null : base64_encode('%PDF-1.4 signeret')]],
             'signatories' => array_values($this->signatories),
         ];
     }
 
     public bool $orderMissing = false;
+
+    public bool $closeWithoutBlob = false;
 
     public function getOrderStatus(string $orderId): ?array
     {

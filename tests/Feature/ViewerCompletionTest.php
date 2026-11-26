@@ -1324,4 +1324,42 @@ class ViewerCompletionTest extends TestCase
         $this->assertNotFalse($lastGreen);
         $this->assertTrue($lastRed === false || $lastGreen > $lastRed, 'Prikken ved "Blokering løst" skal være grøn.');
     }
+
+    #[Test]
+    public function the_scheduled_jobs_use_the_default_queue_unless_the_host_chooses_one(): void
+    {
+        foreach ([SyncIduraSignatureStatus::class, \Fountainhead\SigningRoom\Jobs\SendSigningReminders::class, \Fountainhead\SigningRoom\Jobs\ExpireSigningEnvelopes::class] as $job) {
+            $this->assertNull((new $job)->queue, "{$job} skal på standardkøen");
+        }
+
+        config(['signing-room.queue' => 'signing-room']);
+        $this->assertSame('signing-room', (new SyncIduraSignatureStatus)->queue);
+    }
+
+    #[Test]
+    public function an_http_failure_key_ignores_the_response_body(): void
+    {
+        $a = new \RuntimeException('Idura API request failed with status 502: <html>req_Ab3kZ9 nonce=xY</html>');
+        $b = new \RuntimeException('Idura API request failed with status 502: <html>req_Q7pL nonce=zW</html>');
+        $c = new \RuntimeException('Idura API request failed with status 503: unavailable');
+
+        $this->assertSame(SigningRoomService::completionFailureReason($a), SigningRoomService::completionFailureReason($b));
+        $this->assertNotSame(SigningRoomService::completionFailureReason($a), SigningRoomService::completionFailureReason($c));
+    }
+
+    #[Test]
+    public function a_closed_order_without_a_pdf_is_not_completed_and_is_reported_as_critical(): void
+    {
+        Exceptions::fake();
+
+        $envelope = $this->sentEnvelope([['name' => 'A', 'email' => 'a@example.com']]);
+        $this->idura->closeWithoutBlob = true;
+
+        $this->sign($this->party($envelope, 'a@example.com'));
+
+        $this->assertNotEquals(EnvelopeStatus::Completed, $envelope->fresh()->status);
+        $this->assertNull($envelope->fresh()->completed_at);
+        Exceptions::assertReported(fn (\Fountainhead\SigningRoom\Exceptions\SignedDocumentUnavailableException $e) => str_starts_with($e->getMessage(), 'KRITISK:'));
+        Notification::assertNotSentTo($this->party($envelope, 'a@example.com'), EnvelopeCompletedNotification::class);
+    }
 }

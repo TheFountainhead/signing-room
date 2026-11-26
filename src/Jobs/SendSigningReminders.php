@@ -18,7 +18,10 @@ class SendSigningReminders implements ShouldQueue
 
     public function __construct()
     {
-        $this->onQueue('signing-room');
+        // Standardkøen, medmindre hosten vælger en anden: en egen kø, som
+        // ingen worker lytter på, betyder at jobbet aldrig kører
+        // (Frankston-masters Horizon lytter kun på default m.fl.).
+        $this->onQueue(config('signing-room.queue'));
     }
 
     public function handle(): void

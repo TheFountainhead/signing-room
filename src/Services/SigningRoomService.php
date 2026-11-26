@@ -297,9 +297,11 @@ class SigningRoomService
 
         $envelope->logEvent(SigningEventType::PartySigned, $party);
 
-        // Via køen: fejler en host-listener, forsøges det igen og ender i
+        // Via køen, ét forsøg: fejler en host-listener, ender jobbet i
         // failed_jobs i stedet for at gå tabt (party.signed er allerede
-        // logget, så recordSignature affyrer ikke igen). Med sync-køen kaster
+        // logget, så recordSignature affyrer ikke igen). Ingen automatisk
+        // retry; en manuel queue:retry kører også de listeners, der lykkedes,
+        // så tjek først (se DispatchPartySignedEvent). Med sync-køen kaster
         // jobbet med det samme; så rapporteres fejlen, og underskriften
         // behandles færdig.
         try {
@@ -589,9 +591,13 @@ class SigningRoomService
     {
         $reason = 'completion_failed:' . $e::class;
 
+        // HTTP-fejl: kun statuskoden. Svarets krop kan indeholde request-id'er
+        // i alle formater og ville ellers give en ny nøgle hver time.
         if (preg_match('/request failed with status (\d{3})/', $e->getMessage(), $m)) {
-            $reason .= ':http_' . $m[1];
-        } elseif (str_starts_with($e->getMessage(), 'Idura GraphQL errors:')) {
+            return $reason . ':http_' . $m[1];
+        }
+
+        if (str_starts_with($e->getMessage(), 'Idura GraphQL errors:')) {
             $reason .= ':graphql';
         }
 
@@ -611,11 +617,12 @@ class SigningRoomService
      * Luk ordren hos Idura og gem den signerede PDF. Skriver ikke kuvertens
      * status; det gør completeEnvelope bagefter i én betinget skrivning.
      *
-     * Returnerer stien til den gemte PDF (null hvis Idura ikke sendte en), eller
-     * false (uden at kaste) hvis ordren hos Idura er CANCELLED eller EXPIRED:
-     * så kan den ikke fuldføres, og blokeringen er rapporteret.
+     * Returnerer stien til den gemte PDF, eller false (uden at kaste) hvis
+     * ordren hos Idura er CANCELLED eller EXPIRED: så kan den ikke fuldføres,
+     * og blokeringen er rapporteret. Mangler PDF'en, kastes
+     * SignedDocumentUnavailableException.
      */
-    private function closeOrderAndStore(SigningEnvelope $envelope): string|false|null
+    private function closeOrderAndStore(SigningEnvelope $envelope): string|false
     {
         $retainDays = config('signing-room.defaults.retain_documents', 7);
         $orderId = $envelope->idura_signature_order_id;
@@ -671,7 +678,13 @@ class SigningRoomService
             return $storagePath;
         }
 
-        return null;
+        // Ordren er lukket, men uden dokument: samme kritiske situation som i
+        // CLOSED-grenen. Kuverten må ikke blive Completed uden PDF, for så
+        // forhindrer isCompleted() ethvert senere forsøg på at hente den.
+        throw new SignedDocumentUnavailableException(
+            "KRITISK: Idura lukkede ordren for kuvert {$envelope->uuid}, men sendte ingen signeret PDF. "
+            . "Idura sletter dokumentet {$retainDays} dage efter lukning. Hent det manuelt nu."
+        );
     }
 
     /**
