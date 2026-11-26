@@ -201,8 +201,19 @@ class SigningEnvelope extends Model
     /** Der er en åben blokering, hvis årsag starter med $reasonPrefix. */
     public function hasOpenBlock(string $reasonPrefix): bool
     {
+        return $this->openBlockReasons()
+            ->contains(fn (string $reason) => str_starts_with($reason, $reasonPrefix));
+    }
+
+    /**
+     * Årsagerne til de åbne blokeringer.
+     *
+     * @return \Illuminate\Support\Collection<int, string>
+     */
+    public function openBlockReasons(): \Illuminate\Support\Collection
+    {
         return $this->openBlocks()
-            ->contains(fn (SigningEvent $event) => str_starts_with((string) ($event->metadata['reason'] ?? ''), $reasonPrefix));
+            ->map(fn (SigningEvent $event) => (string) ($event->metadata['reason'] ?? ''));
     }
 
     public function hasRejectedSigner(): bool

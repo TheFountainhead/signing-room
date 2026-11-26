@@ -2137,4 +2137,57 @@ class ViewerCompletionTest extends TestCase
         $this->assertSame($calls, $this->idura->orderStatusCalls);
         $this->assertEquals(EnvelopeStatus::Expired, $old->fresh()->status);
     }
+
+    #[Test]
+    public function an_order_reported_as_cancelled_is_not_polled_every_hour_either(): void
+    {
+        $cancelled = $this->expiredAllSigned('cancelled@example.com', now()->subDays(2));
+        $cancelled->logEvent(\Fountainhead\SigningRoom\Enums\SigningEventType::EnvelopeBlocked, metadata: ['reason' => 'idura_order_cancelled']);
+        $calls = $this->idura->orderStatusCalls;
+
+        $this->sync();
+
+        $this->assertSame($calls, $this->idura->orderStatusCalls);
+    }
+
+    #[Test]
+    public function an_old_envelope_whose_order_idura_did_not_know_keeps_being_polled(): void
+    {
+        // idura_order_missing kan være forbigående: ordren dukker op igen, og
+        // så skal kuverten fuldføres, også efter EXPIRED_RETRY_DAYS.
+        $old = $this->expiredAllSigned('missing@example.com', now()->subMonths(2));
+        $old->logEvent(\Fountainhead\SigningRoom\Enums\SigningEventType::EnvelopeBlocked, metadata: ['reason' => 'idura_order_missing']);
+
+        $this->sync();
+
+        $this->assertEquals(EnvelopeStatus::Completed, $old->fresh()->status);
+    }
+
+    #[Test]
+    public function an_old_envelope_blocked_by_a_legacy_viewer_is_completed_once_the_viewer_is_removed(): void
+    {
+        // Operatøren har fjernet den gamle kopimodtager hos Idura (her: ingen
+        // åben signatory tilbage), men blokeringen står stadig åben her.
+        $old = $this->expiredAllSigned('legacy@example.com', now()->subMonths(2));
+        $old->logEvent(\Fountainhead\SigningRoom\Enums\SigningEventType::EnvelopeBlocked, metadata: ['reason' => 'legacy_viewer_signatory:sig-x']);
+
+        $this->sync();
+
+        $this->assertEquals(EnvelopeStatus::Completed, $old->fresh()->status);
+    }
+
+    #[Test]
+    public function only_the_reason_of_a_block_makes_an_old_envelope_retryable(): void
+    {
+        // Prefiltret læser metadata->reason, ikke hele JSON-kolonnen: en
+        // anden nøgle med samme tekst gør ikke kuverten genforsøgbar.
+        $old = $this->expiredAllSigned('other@example.com', now()->subMonths(2));
+        $old->logEvent(\Fountainhead\SigningRoom\Enums\SigningEventType::EnvelopeBlocked, metadata: ['reason' => 'manual_note', 'detail' => 'completion_failed:RuntimeException']);
+        $calls = $this->idura->orderStatusCalls;
+
+        $this->sync();
+
+        $this->assertSame($calls, $this->idura->orderStatusCalls);
+        $this->assertEquals(EnvelopeStatus::Expired, $old->fresh()->status);
+    }
 }
