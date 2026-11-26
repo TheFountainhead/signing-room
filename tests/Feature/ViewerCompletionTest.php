@@ -2468,4 +2468,19 @@ class ViewerCompletionTest extends TestCase
 
         $this->assertFalse(\Illuminate\Support\Facades\Cache::has($key), 'Næste kørsel skal kunne tage dagens runde.');
     }
+
+    #[Test]
+    public function a_short_idura_outage_in_the_daily_retry_does_not_bring_old_envelopes_back_to_hourly_polling(): void
+    {
+        $old = $this->expiredAllSigned('outage@example.com', now()->subMonths(3));
+        $this->oldBlock($old, ['reason' => 'completion_failed:RuntimeException:abc'], now()->subMonths(2));
+        // Den daglige runde ramte et 503 og ophævede det næste kørsel.
+        $this->oldBlock($old, ['reason' => 'sync_failed:RuntimeException:http_503'], now()->subHours(2));
+        $old->logEvent(\Fountainhead\SigningRoom\Enums\SigningEventType::EnvelopeUnblocked, metadata: ['reason_prefix' => 'sync_failed:']);
+        $calls = $this->idura->orderStatusCalls;
+
+        $this->sync();
+
+        $this->assertSame($calls, $this->idura->orderStatusCalls, 'Egne sync-fejl er ikke aktivitet: ikke hver time.');
+    }
 }

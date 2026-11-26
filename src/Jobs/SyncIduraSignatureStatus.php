@@ -7,6 +7,7 @@ use Fountainhead\SigningRoom\Enums\SigningEventType;
 use Fountainhead\SigningRoom\Exceptions\EnvelopeBlockedByViewerException;
 use Fountainhead\SigningRoom\Exceptions\EnvelopeOrderNotOpenException;
 use Fountainhead\SigningRoom\Models\SigningEnvelope;
+use Fountainhead\SigningRoom\Models\SigningEvent;
 use Fountainhead\SigningRoom\Services\IduraSignatureService;
 use Fountainhead\SigningRoom\Services\SigningRoomService;
 use Illuminate\Bus\Queueable;
@@ -38,6 +39,7 @@ class SyncIduraSignatureStatus implements ShouldQueue, ShouldBeUnique
      * efter sin seneste aktivitet: en registreret underskrift (signed_at er
      * registreringstidspunktet, ikke nødvendigvis underskriftens) eller en
      * blokering/ophævelse. En ophævet blokering starter altså vinduet forfra.
+     * Undtaget: sync_failed-blokeringer og deres ophævelse (isOwnSyncFailure).
      */
     private const EXPIRED_RETRY_DAYS = 14;
 
@@ -305,7 +307,8 @@ class SyncIduraSignatureStatus implements ShouldQueue, ShouldBeUnique
             || $envelope->events()
                 ->whereIn('event_type', [SigningEventType::EnvelopeBlocked->value, SigningEventType::EnvelopeUnblocked->value])
                 ->where('created_at', '>=', $since)
-                ->exists();
+                ->get(['event_type', 'metadata'])
+                ->contains(fn (SigningEvent $event) => ! self::isOwnSyncFailure($event));
 
         if ($recent) {
             return true;
@@ -313,6 +316,21 @@ class SyncIduraSignatureStatus implements ShouldQueue, ShouldBeUnique
 
         return $this->dailyRetry
             && ($reasons->isNotEmpty() || $envelope->legacyBlockingViewers()->exists());
+    }
+
+    /**
+     * En sync_failed-blokering eller dens ophævelse registrerer kun, at vores
+     * eget kald fejlede eller lykkedes igen, ikke fremdrift på kuverten. Den
+     * tæller ikke som aktivitet; ellers ville et kort Idura-nedbrud i den
+     * daglige runde sende gamle kuverter tilbage til polling hver time.
+     */
+    private static function isOwnSyncFailure(SigningEvent $event): bool
+    {
+        $metadata = $event->metadata ?? [];
+
+        return $event->event_type === SigningEventType::EnvelopeBlocked
+            ? str_starts_with((string) ($metadata['reason'] ?? ''), 'sync_failed:')
+            : ($metadata['reason_prefix'] ?? null) === 'sync_failed:';
     }
 
     /**
