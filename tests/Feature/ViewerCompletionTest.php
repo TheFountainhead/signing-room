@@ -2369,16 +2369,22 @@ class ViewerCompletionTest extends TestCase
     }
 
     #[Test]
-    public function a_final_order_block_is_not_retried_in_the_daily_slot_either(): void
+    public function a_final_order_block_is_checked_daily_and_cleared_if_idura_returns_the_order(): void
     {
         $lost = $this->expiredAllSigned('lost-daily@example.com', now()->subMonths(2));
-        $this->oldBlock($lost, ['reason' => 'idura_order_expired'], now()->subMonths(1));
-        $this->inDailySlot();
+        $this->oldBlock($lost, ['reason' => 'idura_order_cancelled'], now()->subMonths(1));
         $calls = $this->idura->orderStatusCalls;
 
         $this->sync();
+        $this->assertSame($calls, $this->idura->orderStatusCalls, 'Ikke hver time.');
 
-        $this->assertSame($calls, $this->idura->orderStatusCalls);
+        // Idura svarer OPEN igen (fx en fejlaflæsning): den daglige runde
+        // løser blokeringen og fuldfører.
+        $this->inDailySlot();
+        $this->idura->orderStatus = 'OPEN';
+        $this->sync();
+
+        $this->assertEquals(EnvelopeStatus::Completed, $lost->fresh()->status);
     }
 
     #[Test]
@@ -2579,5 +2585,23 @@ class ViewerCompletionTest extends TestCase
         $this->travelBack();
 
         Notification::assertSentToTimes($this->party($envelope, 'skipped@example.com'), \Fountainhead\SigningRoom\Notifications\SigningReminderNotification::class, 1);
+    }
+
+    #[Test]
+    public function a_daily_run_where_every_envelope_failed_is_taken_over_by_the_next_run(): void
+    {
+        $old = $this->expiredAllSigned('down@example.com', now()->subMonths(2));
+        $this->oldBlock($old, ['reason' => 'completion_failed:RuntimeException:abc'], now()->subDays(20));
+        $this->inDailySlot();
+        $this->idura->orderStatusFailure = new \RuntimeException('Idura request failed with status 503');
+
+        $this->sync();
+        $this->assertFalse(\Illuminate\Support\Facades\Cache::has(SyncIduraSignatureStatus::DAILY_RETRY_CACHE_KEY.':'.now()->toDateString()));
+
+        $this->idura->orderStatusFailure = null;
+        $this->travel(1)->hour();
+        $this->sync();
+
+        $this->assertEquals(EnvelopeStatus::Completed, $old->fresh()->status);
     }
 }

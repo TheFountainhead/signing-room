@@ -61,7 +61,11 @@ class SyncIduraSignatureStatus implements ShouldQueue, ShouldBeUnique
 
     private string $dailyRetryKey = '';
 
-    /** Idura-ordren er udløbet eller annulleret: kan ikke lukkes, polles ikke. */
+    private int $attempts = 0;
+
+    private int $failures = 0;
+
+    /** Idura-ordren er rapporteret udløbet eller annulleret: kun i den daglige runde. */
     private const FINAL_ORDER_BLOCKS = ['idura_order_expired', 'idura_order_cancelled'];
 
     public function __construct()
@@ -85,7 +89,8 @@ class SyncIduraSignatureStatus implements ShouldQueue, ShouldBeUnique
         // Først når kørslen er færdig: en kørsel, der fejler eller bliver
         // dræbt (fx worker-timeout), efterlader ingen markør, så næste kørsel
         // tager runden. ShouldBeUnique forhindrer to samtidige kørsler.
-        if ($this->dailyRetry) {
+        // Fejlede alle forsøg (fx Idura nede kl. 04), tager næste kørsel runden.
+        if ($this->dailyRetry && ($this->attempts === 0 || $this->failures < $this->attempts)) {
             $this->markDailyRetryDone();
         }
     }
@@ -137,6 +142,7 @@ class SyncIduraSignatureStatus implements ShouldQueue, ShouldBeUnique
                     continue;
                 }
 
+                $this->attempts++;
                 $inspectedSignatories = $this->syncEnvelope($envelope, $idura, $service);
 
                 // Synkroniseringen lykkedes: en tidligere sync-fejl er løst.
@@ -148,6 +154,7 @@ class SyncIduraSignatureStatus implements ShouldQueue, ShouldBeUnique
                     SigningEnvelope::query()->whereKey($envelope->getKey())->update(['last_synced_at' => now()]);
                 }
             } catch (\Throwable $e) {
+                $this->failures++;
                 // Fx et Idura-nedbrud eller forkerte credentials: én rapport pr.
                 // kuvert og fejltype, ikke én i timen.
                 $envelope->reportBlockedOnce('sync_failed:'.substr(SigningRoomService::completionFailureReason($e), strlen('completion_failed:')), $e);
@@ -295,8 +302,11 @@ class SyncIduraSignatureStatus implements ShouldQueue, ShouldBeUnique
     {
         $reasons = $envelope->openBlockReasons();
 
+        // Rapporteret udløbet/annulleret hos Idura: ikke hver time, men med i
+        // den daglige runde, så blokeringen kan løses og kuverten fuldføres,
+        // hvis Idura senere svarer OPEN eller CLOSED.
         if ($reasons->intersect(self::FINAL_ORDER_BLOCKS)->isNotEmpty()) {
-            return false;
+            return $this->dailyRetry;
         }
 
         $since = now()->subDays(self::EXPIRED_RETRY_DAYS);
