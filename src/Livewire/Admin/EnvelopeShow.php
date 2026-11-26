@@ -50,7 +50,7 @@ class EnvelopeShow extends Component
         // kladde) må ikke få notified_at sat her: så ville den runde-mail,
         // der skal komme, når turen er hans, blive sprunget over.
         if (! $this->signingEnvelope->canRemind($party)) {
-            session()->flash('error', $party->name.' kan ikke få en påmindelse endnu: det er ikke hans eller hendes tur.');
+            session()->flash('error', 'Der kan ikke sendes en påmindelse til '.$party->name.' nu. Påmindelser går kun til underskrivere i den aktuelle runde af en sendt kuvert, som har fået dokumentet.');
 
             return;
         }

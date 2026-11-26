@@ -1860,7 +1860,7 @@ class ViewerCompletionTest extends TestCase
         $component->sendReminder($r2->id);
 
         $this->assertNull($r2->fresh()->notified_at, 'notified_at må ikke sættes før partens runde.');
-        $this->assertStringContainsString('ikke hans eller hendes tur', (string) session('error'));
+        $this->assertStringContainsString('Der kan ikke sendes en påmindelse', (string) session('error'));
 
         $this->sign($this->party($envelope, 'r1@example.com'));
         Notification::assertSentToTimes($r2, DocumentReadyNotification::class, 1);
@@ -1959,5 +1959,65 @@ class ViewerCompletionTest extends TestCase
 
         $this->assertEquals(SigningPartyStatus::Signed, $a->fresh()->status);
         Notification::assertNotSentTo($creator, \Fountainhead\SigningRoom\Notifications\PartyRejectedNotification::class);
+    }
+
+    #[Test]
+    public function sending_an_old_draft_gives_it_a_fresh_expiry(): void
+    {
+        $draft = $this->service->createEnvelope(
+            title: 'Gammel kladde',
+            pdfPath: 'signing-room/original.pdf',
+            parties: [['name' => 'A', 'email' => 'a@example.com']],
+        );
+        SigningEnvelope::whereKey($draft->id)->update(['expires_at' => now()->subDays(10)]);
+
+        $sent = $this->service->sendEnvelope($draft->fresh());
+
+        $this->assertTrue($sent->expires_at->isFuture());
+        $this->assertTrue($this->party($sent, 'a@example.com')->isTokenValid());
+    }
+
+    #[Test]
+    public function a_future_round_party_reminded_before_this_version_still_gets_the_round_mail(): void
+    {
+        $envelope = $this->sentEnvelope([
+            ['name' => 'R1', 'email' => 'r1@example.com', 'signing_round' => 1],
+            ['name' => 'R2', 'email' => 'r2@example.com', 'signing_round' => 2],
+        ]);
+        // Gammel påmindelse: notified_at sat, status uændret, intet party.notified.
+        $this->party($envelope, 'r2@example.com')->update(['notified_at' => now()->subDay()]);
+
+        $this->sign($this->party($envelope, 'r1@example.com'));
+
+        Notification::assertSentToTimes($this->party($envelope, 'r2@example.com'), DocumentReadyNotification::class, 1);
+    }
+
+    #[Test]
+    public function a_late_error_webhook_does_not_overwrite_a_rejection(): void
+    {
+        config(['signing-room.idura.webhook_secret' => null]);
+        $envelope = $this->sentEnvelope([['name' => 'A', 'email' => 'a@example.com'], ['name' => 'B', 'email' => 'b@example.com']]);
+        $a = $this->party($envelope, 'a@example.com');
+        $this->service->handleRejected($a, 'Nej');
+
+        $this->postJson(route('signing-room.webhook'), [
+            'event' => 'SIGNATORY_SIGN_ERROR',
+            'signatureOrderId' => $envelope->idura_signature_order_id,
+            'signatoryId' => $a->idura_signatory_id,
+        ])->assertOk();
+
+        $this->assertEquals(SigningPartyStatus::Rejected, $a->fresh()->status);
+    }
+
+    #[Test]
+    public function a_role_with_whitespace_is_normalised_like_the_admin_form(): void
+    {
+        $envelope = $this->service->createEnvelope(
+            title: 'Mellemrum',
+            pdfPath: 'signing-room/original.pdf',
+            parties: [['name' => 'A', 'email' => 'a@example.com', 'role' => ' Signer ']],
+        );
+
+        $this->assertSame(['signer'], $envelope->parties()->pluck('role')->all());
     }
 }

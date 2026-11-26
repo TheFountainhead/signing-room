@@ -90,6 +90,15 @@ class SigningRoomService
             throw new EnvelopeHasNoSignerException;
         }
 
+        // En kladde, hvis udløbsdato er passeret (gemt for længe siden), får
+        // en frisk udløbsdato ved afsendelse. Ellers får Idura 0 eller færre
+        // dage, alle links er ugyldige, og det daglige job udløber den straks.
+        if ($envelope->expires_at === null || $envelope->expires_at->isPast()) {
+            $envelope->update([
+                'expires_at' => now()->addDays((int) config('signing-room.defaults.expires_in_days', 30)),
+            ]);
+        }
+
         $disk = Storage::disk(config('signing-room.storage.disk', 'local'));
         $pdfContents = $disk->get($envelope->original_document);
         $pdfBase64 = base64_encode($pdfContents);
@@ -486,25 +495,33 @@ class SigningRoomService
         // DocumentReadyNotification er queued: fejler selve afsendelsen senere
         // i workeren, er parten allerede markeret notified, og jobbet ligger i
         // failed_jobs (queue:retry). Det dækker denne gen-notifikation ikke.
+        // "Ikke notificeret til runden" = ingen party.notified-event for parten
+        // og status ikke allerede notified/signed/rejected. Ikke kun
+        // notified_at IS NULL: en manuel påmindelse før denne version kunne
+        // sætte notified_at på en part i en senere runde, og så ville
+        // runde-mailen blive sprunget over.
         $parties = $envelope->parties()
             ->where('signing_round', $round)
             ->where('role', SigningPartyRole::Signer->value)
-            // Ikke notificeret endnu, uanset om parten har kigget i portalen
-            // (viewed) eller haft en fejl før sin runde.
-            ->whereNull('notified_at')
-            ->whereNotIn('status', [SigningPartyStatus::Signed->value, SigningPartyStatus::Rejected->value])
+            ->whereNotIn('status', [SigningPartyStatus::Notified->value, SigningPartyStatus::Signed->value, SigningPartyStatus::Rejected->value])
+            ->whereDoesntHave('events', fn ($q) => $q->where('event_type', SigningEventType::PartyNotified->value))
             ->get();
 
         foreach ($parties as $index => $party) {
-            // Claim parten atomisk, før mailen sendes: sync og en webhook kan
-            // nå hertil samtidig, og kun den, der flytter parten fra pending,
-            // sender.
+            // Claim parten atomisk, før mailen sendes: kun hvis notified_at
+            // stadig er, som vi så den. Sync og en webhook kan nå hertil
+            // samtidig; den første sætter notified_at, og den anden får 0
+            // rækker.
             $previousStatus = $party->status instanceof SigningPartyStatus ? $party->status->value : $party->status;
+            $previousNotifiedAt = $party->getRawOriginal('notified_at');
 
             $claimed = SigningParty::query()
                 ->whereKey($party->getKey())
-                ->whereNull('notified_at')
-                ->whereNotIn('status', [SigningPartyStatus::Signed->value, SigningPartyStatus::Rejected->value])
+                ->when(
+                    $previousNotifiedAt === null,
+                    fn ($q) => $q->whereNull('notified_at'),
+                    fn ($q) => $q->where('notified_at', $previousNotifiedAt),
+                )
                 ->update([
                     'status' => SigningPartyStatus::Notified->value,
                     'notified_at' => now(),
@@ -524,7 +541,7 @@ class SigningRoomService
             } catch (\Throwable $e) {
                 SigningParty::query()
                     ->whereKey($party->getKey())
-                    ->update(['status' => $previousStatus, 'notified_at' => null]);
+                    ->update(['status' => $previousStatus, 'notified_at' => $previousNotifiedAt]);
                 report($e);
 
                 continue;
@@ -874,7 +891,9 @@ class SigningRoomService
             return $role->value;
         }
 
-        return $role === null || $role === '' ? SigningPartyRole::Signer->value : strtolower($role);
+        $role = $role === null ? '' : strtolower(trim($role));
+
+        return $role === '' ? SigningPartyRole::Signer->value : $role;
     }
 
     /**

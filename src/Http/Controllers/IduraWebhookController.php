@@ -94,7 +94,7 @@ class IduraWebhookController extends Controller
         // En sen eller gentaget fejl-webhook må ikke overskrive en underskrift.
         if ($party) {
             SigningParty::query()->whereKey($party->getKey())
-                ->where('status', '!=', SigningPartyStatus::Signed->value)
+                ->whereNotIn('status', [SigningPartyStatus::Signed->value, SigningPartyStatus::Rejected->value])
                 ->update(['status' => SigningPartyStatus::Error->value]);
         }
         $envelope->logEvent(SigningEventType::PartyError, $party, $data);
