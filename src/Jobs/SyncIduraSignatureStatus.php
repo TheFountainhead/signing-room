@@ -14,6 +14,7 @@ use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Schema;
 
 /**
@@ -42,12 +43,18 @@ class SyncIduraSignatureStatus implements ShouldQueue, ShouldBeUnique
 
     /**
      * Efter vinduet genforsøges en udløbet, helt underskrevet kuvert én gang
-     * i døgnet (jobbet kører hver time), hvis den har en åben blokering, der
-     * ikke er endelig, eller en gammel kopimodtager i den aktuelle runde. En
-     * forbigående fejl, der rettes efter vinduet (fx en disk), samles altså
-     * stadig op, uden at kuverten polles hver time uden ende.
+     * i døgnet, hvis den har en åben blokering, der ikke er endelig, eller en
+     * gammel kopimodtager i den aktuelle runde. En forbigående fejl, der rettes
+     * efter vinduet (fx en disk), samles altså stadig op, uden at kuverten
+     * polles hver time uden ende. Den første kørsel fra kl. 04 hver dag tager
+     * det (markør i cachen), så en tabt kørsel kl. 04 overtages kl. 05.
      */
     private const DAILY_RETRY_HOUR = 4;
+
+    public const DAILY_RETRY_CACHE_KEY = 'signing-room:sync:daily-expired-retry';
+
+    /** Afgjort én gang pr. kørsel i handle(), så en kørsel over et timeskift er konsistent. */
+    private bool $dailyRetry = false;
 
     /** Idura-ordren er udløbet eller annulleret: kan ikke lukkes, polles ikke. */
     private const FINAL_ORDER_BLOCKS = ['idura_order_expired', 'idura_order_cancelled'];
@@ -65,6 +72,8 @@ class SyncIduraSignatureStatus implements ShouldQueue, ShouldBeUnique
         if (! Schema::hasTable('signing_envelopes')) {
             return;
         }
+
+        $this->dailyRetry = $this->claimDailyRetry();
 
         $envelopes = SigningEnvelope::query()
             ->where(fn ($q) => $q
@@ -88,7 +97,7 @@ class SyncIduraSignatureStatus implements ShouldQueue, ShouldBeUnique
                         ->orWhereHas('events', fn ($e) => $e
                             ->whereIn('event_type', [SigningEventType::EnvelopeBlocked->value, SigningEventType::EnvelopeUnblocked->value])
                             ->where('created_at', '>=', now()->subDays(self::EXPIRED_RETRY_DAYS)))
-                        ->when($this->isDailyRetrySlot(), fn ($daily) => $daily
+                        ->when($this->dailyRetry, fn ($daily) => $daily
                             ->orWhereHas('events', fn ($e) => $e->where('event_type', SigningEventType::EnvelopeBlocked->value))
                             // Også før blokeringen er rapporteret: kuverter, der
                             // udløb lokalt før rapporteringen fandtes, skal nå
@@ -259,7 +268,7 @@ class SyncIduraSignatureStatus implements ShouldQueue, ShouldBeUnique
      * En udløbet, helt underskreven kuvert genforsøges ikke, hvis Idura-ordren
      * er rapporteret udløbet eller annulleret (FINAL_ORDER_BLOCKS). Ellers
      * hver time ved aktivitet inden for EXPIRED_RETRY_DAYS, og derefter én
-     * gang i døgnet (DAILY_RETRY_HOUR), så længe den har en åben blokering
+     * gang i døgnet (se DAILY_RETRY_HOUR), så længe den har en åben blokering
      * eller en gammel kopimodtager i den aktuelle runde (samme afgrænsning som
      * rapporten, legacyBlockingViewers()).
      */
@@ -283,13 +292,25 @@ class SyncIduraSignatureStatus implements ShouldQueue, ShouldBeUnique
             return true;
         }
 
-        return $this->isDailyRetrySlot()
+        return $this->dailyRetry
             && ($reasons->isNotEmpty() || $envelope->legacyBlockingViewers()->exists());
     }
 
-    private function isDailyRetrySlot(): bool
+    /**
+     * Den første kørsel fra DAILY_RETRY_HOUR hver dag får den daglige runde.
+     * Uden cache springes den over (næste kørsel prøver igen).
+     */
+    private function claimDailyRetry(): bool
     {
-        return now()->hour === self::DAILY_RETRY_HOUR;
+        if (now()->hour < self::DAILY_RETRY_HOUR) {
+            return false;
+        }
+
+        try {
+            return Cache::add(self::DAILY_RETRY_CACHE_KEY.':'.now()->toDateString(), true, now()->addDay());
+        } catch (\Throwable) {
+            return false;
+        }
     }
 
     /**
