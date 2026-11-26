@@ -2111,4 +2111,30 @@ class ViewerCompletionTest extends TestCase
 
         $this->assertEquals(EnvelopeStatus::Completed, $old->fresh()->status);
     }
+
+    #[Test]
+    public function an_envelope_reported_as_lost_is_not_polled_every_hour(): void
+    {
+        $lost = $this->expiredAllSigned('lost@example.com', now()->subDays(2));
+        $lost->logEvent(\Fountainhead\SigningRoom\Enums\SigningEventType::EnvelopeBlocked, metadata: ['reason' => 'idura_order_expired']);
+        $calls = $this->idura->orderStatusCalls;
+
+        $this->sync();
+
+        $this->assertSame($calls, $this->idura->orderStatusCalls);
+    }
+
+    #[Test]
+    public function an_old_envelope_with_only_a_resolved_sync_failure_is_not_reprocessed(): void
+    {
+        $old = $this->expiredAllSigned('old@example.com', now()->subMonths(2));
+        $old->logEvent(\Fountainhead\SigningRoom\Enums\SigningEventType::EnvelopeBlocked, metadata: ['reason' => 'sync_failed:RuntimeException:http_503']);
+        $old->logEvent(\Fountainhead\SigningRoom\Enums\SigningEventType::EnvelopeUnblocked, metadata: ['reason_prefix' => 'sync_failed:']);
+        $calls = $this->idura->orderStatusCalls;
+
+        $this->sync();
+
+        $this->assertSame($calls, $this->idura->orderStatusCalls);
+        $this->assertEquals(EnvelopeStatus::Expired, $old->fresh()->status);
+    }
 }

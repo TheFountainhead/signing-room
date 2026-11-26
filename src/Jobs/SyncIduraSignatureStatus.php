@@ -32,7 +32,11 @@ class SyncIduraSignatureStatus implements ShouldQueue, ShouldBeUnique
 
     private const RECORD_BACKFILL_HOURS = 24;
 
-    /** Hvor gammel den seneste underskrift må være, før en udløbet, helt underskrevet kuvert uden blokering ikke længere genforsøges. */
+    /**
+     * Hvor længe efter at den seneste underskrift blev registreret (signed_at
+     * er registreringstidspunktet, ikke nødvendigvis underskriftens), en
+     * udløbet, helt underskrevet kuvert uden åben blokering genforsøges.
+     */
     private const EXPIRED_RETRY_DAYS = 14;
 
     public function __construct()
@@ -53,15 +57,17 @@ class SyncIduraSignatureStatus implements ShouldQueue, ShouldBeUnique
             ->where(fn ($q) => $q
                 ->whereIn('status', [EnvelopeStatus::Sent, EnvelopeStatus::PartiallySigned])
                 // Udløbet lokalt, men alle underskrivere har underskrevet og
-                // kuverten er ikke fuldført: fuldførelsen prøves igen, så længe
-                // Idura-ordren kan lukkes (ellers rapporteres den tabte PDF).
+                // kuverten er ikke fuldført: fuldførelsen prøves igen.
                 //
-                // Afgrænset, så en host, hvor jobbene har kørt hele tiden, ikke
-                // får hele historikken genbehandlet ved deploy: kun hvis den
-                // seneste underskrift er under EXPIRED_RETRY_DAYS gammel, eller
-                // hvis kuverten har en blokering (et fejlet forsøg fra denne
-                // version), som så bliver ved med at blive prøvet, til den er
-                // fuldført eller rapporteret som tabt.
+                // Afgrænset, så historik ikke genbehandles ved deploy: kun hvis
+                // en underskrift er registreret inden for EXPIRED_RETRY_DAYS,
+                // eller hvis kuverten har en åben, genforsøgbar blokering
+                // (completion_failed:/sync_failed:, se isRetryableExpired()).
+                // Kuverter, der bliver helt underskrevne og udløbne under denne
+                // kode, når altid en af de to tilstande: enten fuldføres de,
+                // eller et fejlet forsøg giver en blokering, eller Idura-udløbet
+                // rapporteres. Det, der springes over, er kun historik fra før,
+                // som den gamle sync heller aldrig rørte.
                 ->orWhere(fn ($q) => $q
                     ->where('status', EnvelopeStatus::Expired)
                     ->whereNull('completed_at')
@@ -69,12 +75,20 @@ class SyncIduraSignatureStatus implements ShouldQueue, ShouldBeUnique
                     ->whereDoesntHave('parties', fn ($p) => $p->where('role', 'signer')->where('status', '!=', 'signed'))
                     ->where(fn ($recent) => $recent
                         ->whereHas('parties', fn ($p) => $p->where('role', 'signer')->where('signed_at', '>=', now()->subDays(self::EXPIRED_RETRY_DAYS)))
-                        ->orWhereHas('events', fn ($e) => $e->where('event_type', SigningEventType::EnvelopeBlocked->value)))))
+                        ->orWhereHas('events', fn ($e) => $e
+                            ->where('event_type', SigningEventType::EnvelopeBlocked->value)
+                            ->where(fn ($r) => $r
+                                ->where('metadata', 'like', '%completion_failed:%')
+                                ->orWhere('metadata', 'like', '%sync_failed:%'))))))
             ->whereNotNull('idura_signature_order_id')
             ->tap(fn ($query) => SigningEnvelope::onlyProcessable($query))
             ->get();
 
         foreach ($envelopes as $envelope) {
+            if ($envelope->status === EnvelopeStatus::Expired && ! $this->isRetryableExpired($envelope)) {
+                continue;
+            }
+
             // Én kuvert der fejler, må ikke stoppe synkroniseringen af resten.
             try {
                 $inspectedSignatories = $this->syncEnvelope($envelope, $idura, $service);
@@ -221,6 +235,29 @@ class SyncIduraSignatureStatus implements ShouldQueue, ShouldBeUnique
         $this->reportLegacyViewerBlockOnce($envelope);
 
         return true;
+    }
+
+    /**
+     * En udløbet kuvert genforsøges, hvis en underskrift er registreret inden
+     * for EXPIRED_RETRY_DAYS, eller hvis den har en åben (ikke løst)
+     * blokering af en genforsøgbar art. Endelige blokeringer (ordren udløbet,
+     * annulleret eller ukendt hos Idura, gammel kopimodtager) er rapporteret
+     * og kræver manuel handling; de polles ikke hver time.
+     */
+    private function isRetryableExpired(SigningEnvelope $envelope): bool
+    {
+        $recent = $envelope->parties()
+            ->where('role', 'signer')
+            ->where('signed_at', '>=', now()->subDays(self::EXPIRED_RETRY_DAYS))
+            ->exists();
+
+        if ($envelope->hasOpenBlock('idura_order_')) {
+            return false;
+        }
+
+        return $recent
+            || $envelope->hasOpenBlock('completion_failed:')
+            || $envelope->hasOpenBlock('sync_failed:');
     }
 
     /**
