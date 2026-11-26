@@ -2128,8 +2128,9 @@ class ViewerCompletionTest extends TestCase
     public function an_old_envelope_with_only_a_resolved_sync_failure_is_not_reprocessed(): void
     {
         $old = $this->expiredAllSigned('old@example.com', now()->subMonths(2));
-        $old->logEvent(\Fountainhead\SigningRoom\Enums\SigningEventType::EnvelopeBlocked, metadata: ['reason' => 'sync_failed:RuntimeException:http_503']);
-        $old->logEvent(\Fountainhead\SigningRoom\Enums\SigningEventType::EnvelopeUnblocked, metadata: ['reason_prefix' => 'sync_failed:']);
+        $this->oldBlock($old, ['reason' => 'sync_failed:RuntimeException:http_503'], now()->subDays(20));
+        $old->logEvent(\Fountainhead\SigningRoom\Enums\SigningEventType::EnvelopeUnblocked, metadata: ['reason_prefix' => 'sync_failed:'])
+            ->forceFill(['created_at' => now()->subDays(19)])->save();
         $calls = $this->idura->orderStatusCalls;
 
         $this->sync();
@@ -2179,15 +2180,99 @@ class ViewerCompletionTest extends TestCase
     #[Test]
     public function only_the_reason_of_a_block_makes_an_old_envelope_retryable(): void
     {
-        // Prefiltret læser metadata->reason, ikke hele JSON-kolonnen: en
-        // anden nøgle med samme tekst gør ikke kuverten genforsøgbar.
+        // Prefiltret og isRetryableExpired læser metadata->reason, ikke hele
+        // JSON-kolonnen: en anden nøgle med samme tekst gør ikke en gammel
+        // kuvert genforsøgbar.
         $old = $this->expiredAllSigned('other@example.com', now()->subMonths(2));
-        $old->logEvent(\Fountainhead\SigningRoom\Enums\SigningEventType::EnvelopeBlocked, metadata: ['reason' => 'manual_note', 'detail' => 'completion_failed:RuntimeException']);
+        $this->oldBlock($old, ['reason' => 'manual_note', 'detail' => 'legacy_viewer_signatory:sig-x'], now()->subMonths(2));
         $calls = $this->idura->orderStatusCalls;
 
         $this->sync();
 
         $this->assertSame($calls, $this->idura->orderStatusCalls);
         $this->assertEquals(EnvelopeStatus::Expired, $old->fresh()->status);
+    }
+
+    private function oldBlock(SigningEnvelope $envelope, array $metadata, \DateTimeInterface $at): void
+    {
+        $event = $envelope->logEvent(\Fountainhead\SigningRoom\Enums\SigningEventType::EnvelopeBlocked, metadata: $metadata);
+        $event->forceFill(['created_at' => $at])->save();
+    }
+
+    #[Test]
+    public function a_temporary_block_keeps_an_old_envelope_retried_for_fourteen_days_after_it_was_reported(): void
+    {
+        $recent = $this->expiredAllSigned('recent@example.com', now()->subMonths(2));
+        $this->oldBlock($recent, ['reason' => 'idura_order_missing'], now()->subDays(13));
+        $stale = $this->expiredAllSigned('stale@example.com', now()->subMonths(2));
+        $this->oldBlock($stale, ['reason' => 'completion_failed:RuntimeException:http_503'], now()->subDays(15));
+
+        $this->sync();
+
+        $this->assertEquals(EnvelopeStatus::Completed, $recent->fresh()->status, 'Rapporteret for 13 dage siden: genforsøges.');
+        $this->assertEquals(EnvelopeStatus::Expired, $stale->fresh()->status, 'Rapporteret for 15 dage siden: står åben til manuel handling.');
+        $this->assertNull($stale->fresh()->last_synced_at);
+    }
+
+    #[Test]
+    public function an_old_legacy_viewer_block_is_retried_however_old_it_is(): void
+    {
+        $old = $this->expiredAllSigned('legacy-old@example.com', now()->subMonths(3));
+        $this->oldBlock($old, ['reason' => 'legacy_viewer_signatory:sig-x'], now()->subMonths(2));
+
+        $this->sync();
+
+        $this->assertEquals(EnvelopeStatus::Completed, $old->fresh()->status);
+    }
+
+    #[Test]
+    public function a_cleared_block_restarts_the_window_so_an_unfinished_envelope_is_not_dropped(): void
+    {
+        // Kørsel 1 ophæver idura_order_missing, men en anden proces holder
+        // fuldførelsen: ikke fuldført og ingen ny blokering. Kørsel 2 skal
+        // stadig tage den, selv om underskriften er gammel.
+        $old = $this->expiredAllSigned('cleared@example.com', now()->subMonths(2));
+        $this->oldBlock($old, ['reason' => 'idura_order_missing'], now()->subDays(13));
+        SigningEnvelope::whereKey($old->id)->update(['completion_started_at' => now()]);
+
+        $this->sync();
+        $this->assertEquals(EnvelopeStatus::Expired, $old->fresh()->status, 'Forudsætning: kørsel 1 fuldfører ikke.');
+        $this->assertFalse($old->fresh()->hasOpenBlock('idura_order_missing'), 'Forudsætning: blokeringen er ophævet.');
+
+        // To dage senere: blokeringen er 15 dage gammel, kun ophævelsen er
+        // inden for vinduet.
+        SigningEnvelope::whereKey($old->id)->update(['completion_started_at' => null]);
+        $this->travel(2)->days();
+        $this->sync();
+        $this->travelBack();
+
+        $this->assertEquals(EnvelopeStatus::Completed, $old->fresh()->status);
+    }
+
+    #[Test]
+    public function an_unexpected_order_status_is_not_final_for_an_expired_envelope(): void
+    {
+        $envelope = $this->expiredAllSigned('pending@example.com', now()->subDays(2));
+        $envelope->logEvent(\Fountainhead\SigningRoom\Enums\SigningEventType::EnvelopeBlocked, metadata: ['reason' => 'idura_order_pending']);
+
+        $this->sync();
+
+        $this->assertEquals(EnvelopeStatus::Completed, $envelope->fresh()->status, 'Idura returnerer OPEN igen: kuverten fuldføres.');
+    }
+
+    #[Test]
+    public function an_old_resolved_legacy_viewer_block_does_not_keep_an_envelope_retried(): void
+    {
+        // Kopimodtagerblokeringen er ophævet for længe siden: kuverten er
+        // historik, selv om prefiltret ser den gamle blokering.
+        $old = $this->expiredAllSigned('legacy-resolved@example.com', now()->subMonths(3));
+        $this->oldBlock($old, ['reason' => 'legacy_viewer_signatory:sig-x'], now()->subMonths(2));
+        $old->logEvent(\Fountainhead\SigningRoom\Enums\SigningEventType::EnvelopeUnblocked, metadata: ['reason_prefix' => 'legacy_viewer_signatory'])
+            ->forceFill(['created_at' => now()->subMonths(2)->addDay()])->save();
+        $calls = $this->idura->orderStatusCalls;
+
+        $this->sync();
+
+        $this->assertSame($calls, $this->idura->orderStatusCalls);
     }
 }

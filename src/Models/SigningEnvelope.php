@@ -212,7 +212,10 @@ class SigningEnvelope extends Model
      */
     public function openBlockReasons(): \Illuminate\Support\Collection
     {
+        // toBase(): en tom Eloquent-samling forbliver ellers Eloquent efter
+        // map(), og så fejler fx intersect() på strenge (getKey()).
         return $this->openBlocks()
+            ->toBase()
             ->map(fn (SigningEvent $event) => (string) ($event->metadata['reason'] ?? ''));
     }
 
