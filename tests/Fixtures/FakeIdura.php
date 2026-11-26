@@ -93,7 +93,7 @@ class FakeIdura extends IduraSignatureService
 
         if ($this->failNextCloses > 0) {
             $this->failNextCloses--;
-            throw new RuntimeException('Idura API request failed with status 503: unavailable');
+            throw new RuntimeException('Idura API request failed with status 503: unavailable (request ' . $this->closeCalls . ')');
         }
 
         foreach ($this->signatories as $signatory) {

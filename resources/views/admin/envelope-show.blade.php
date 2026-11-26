@@ -180,6 +180,7 @@
                                 'envelope.expired' => 'Udløbet',
                                 'envelope.cancelled' => 'Annulleret',
                                 'envelope.blocked' => 'Fuldførelse blokeret, kræver handling',
+                                'envelope.unblocked' => 'Blokering løst',
                                 'party.notified' => 'Notifikation sendt',
                                 'party.reminded' => 'Påmindelse sendt',
                                 'party.viewed' => 'Dokument åbnet',

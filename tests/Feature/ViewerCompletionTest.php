@@ -997,4 +997,206 @@ class ViewerCompletionTest extends TestCase
             putenv($saved === false ? 'SIGNING_ROOM_NOTIFY_PARTY_SIGNED' : "SIGNING_ROOM_NOTIFY_PARTY_SIGNED={$saved}");
         }
     }
+
+    #[Test]
+    public function a_cancelled_order_is_checked_before_any_signature_is_handled(): void
+    {
+        Exceptions::fake();
+
+        $envelope = $this->sentEnvelope([
+            ['name' => 'R1', 'email' => 'r1@example.com', 'signing_round' => 1],
+            ['name' => 'R2', 'email' => 'r2@example.com', 'signing_round' => 2],
+        ]);
+        $r1 = $this->party($envelope, 'r1@example.com');
+        $this->idura->markSigned($r1->idura_signatory_id);
+        $this->idura->orderStatus = 'CANCELLED';
+
+        $this->sync();
+        $this->sync();
+
+        $this->assertNotEquals(SigningPartyStatus::Signed, $r1->fresh()->status);
+        $this->assertSame(1, $envelope->fresh()->current_round);
+        Notification::assertNotSentTo($this->party($envelope, 'r2@example.com'), DocumentReadyNotification::class);
+        Exceptions::assertReportedCount(1);
+    }
+
+    #[Test]
+    public function an_expired_order_is_marked_expired_without_handling_signatures(): void
+    {
+        $envelope = $this->sentEnvelope([['name' => 'A', 'email' => 'a@example.com']]);
+        $a = $this->party($envelope, 'a@example.com');
+        $this->idura->markSigned($a->idura_signatory_id);
+        $this->idura->orderStatus = 'EXPIRED';
+
+        $this->sync();
+
+        $this->assertEquals(EnvelopeStatus::Expired, $envelope->fresh()->status);
+        $this->assertNotEquals(SigningPartyStatus::Signed, $a->fresh()->status);
+        $this->assertSame(0, $this->idura->closeCalls);
+    }
+
+    #[Test]
+    public function a_signature_on_a_cancelled_envelope_is_recorded_but_nothing_advances(): void
+    {
+        $envelope = $this->sentEnvelope([
+            ['name' => 'R1', 'email' => 'r1@example.com', 'signing_round' => 1],
+            ['name' => 'R2', 'email' => 'r2@example.com', 'signing_round' => 2],
+        ]);
+        SigningEnvelope::whereKey($envelope->id)->update(['status' => EnvelopeStatus::Cancelled->value]);
+
+        $this->sign($this->party($envelope, 'r1@example.com'));
+
+        $this->assertEquals(SigningPartyStatus::Signed, $this->party($envelope, 'r1@example.com')->status);
+        $this->assertSame(1, $envelope->fresh()->current_round);
+        $this->assertEquals(EnvelopeStatus::Cancelled, $envelope->fresh()->status);
+        Notification::assertNotSentTo($this->party($envelope, 'r2@example.com'), DocumentReadyNotification::class);
+    }
+
+    #[Test]
+    public function the_process_that_loses_the_completion_race_neither_logs_nor_mails(): void
+    {
+        $envelope = $this->sentEnvelope([['name' => 'A', 'email' => 'a@example.com']]);
+
+        // Imens vi lukker ordren, overtager en anden proces og fuldfører først.
+        $this->idura->duringClose = function () use ($envelope) {
+            SigningEnvelope::whereKey($envelope->id)->update([
+                'status' => EnvelopeStatus::Completed->value,
+                'completed_at' => now(),
+                'signed_document' => 'signing-room/other.pdf',
+                'completion_started_at' => null,
+            ]);
+        };
+
+        $this->sign($this->party($envelope, 'a@example.com'));
+
+        $this->assertSame(0, $envelope->events()->where('event_type', 'envelope.completed')->count());
+        Notification::assertNotSentTo($this->party($envelope, 'a@example.com'), EnvelopeCompletedNotification::class);
+        $this->assertSame('signing-room/other.pdf', $envelope->fresh()->signed_document);
+    }
+
+    #[Test]
+    public function a_failing_process_only_releases_its_own_claim(): void
+    {
+        Exceptions::fake();
+
+        $envelope = $this->sentEnvelope([['name' => 'A', 'email' => 'a@example.com']]);
+        $theirs = now()->addMinute()->startOfSecond();
+
+        // Vores claim blev overtaget, mens vi ventede på Idura; derefter fejler vi.
+        $this->idura->failNextCloses = 1;
+        $this->idura->duringClose = function () use ($envelope, $theirs) {
+            SigningEnvelope::whereKey($envelope->id)->update(['completion_started_at' => $theirs]);
+        };
+
+        $this->sign($this->party($envelope, 'a@example.com'));
+
+        $this->assertEquals($theirs, $envelope->fresh()->completion_started_at, 'En andens claim må ikke slettes.');
+    }
+
+    #[Test]
+    public function varying_failure_messages_are_reported_once_and_resolved_on_success(): void
+    {
+        Exceptions::fake();
+
+        $envelope = $this->sentEnvelope([['name' => 'A', 'email' => 'a@example.com']]);
+        $this->idura->failNextCloses = 2; // "request 1", "request 2": forskellige beskeder
+
+        $this->sign($this->party($envelope, 'a@example.com'));
+        $this->sync();
+
+        Exceptions::assertReportedCount(1);
+        $this->assertSame(0, $envelope->events()->where('event_type', 'envelope.unblocked')->count());
+
+        $this->sync();
+
+        $this->assertEquals(EnvelopeStatus::Completed, $envelope->fresh()->status);
+        $this->assertSame(1, $envelope->events()->where('event_type', 'envelope.unblocked')->count(), 'En forbigående fejl må ikke stå som åben blokering.');
+    }
+
+    #[Test]
+    public function a_failed_round_mail_is_retried_by_the_sync_job_without_mailing_others_twice(): void
+    {
+        Exceptions::fake();
+
+        $envelope = $this->sentEnvelope([
+            ['name' => 'R1', 'email' => 'r1@example.com', 'signing_round' => 1],
+            ['name' => 'R2a', 'email' => 'r2a@example.com', 'signing_round' => 2],
+            ['name' => 'R2b', 'email' => 'r2b@example.com', 'signing_round' => 2],
+        ]);
+
+        $fake = Notification::getFacadeRoot();
+        $failing = new class($fake) extends \Illuminate\Support\Testing\Fakes\NotificationFake {
+            public bool $fail = true;
+
+            public function __construct(private $inner) {}
+
+            public function send($notifiables, $notification)
+            {
+                $first = collect(\Illuminate\Support\Arr::wrap($notifiables))->first();
+                if ($this->fail && $notification instanceof DocumentReadyNotification && ($first->email ?? null) === 'r2a@example.com') {
+                    throw new \RuntimeException('Mailkø nede');
+                }
+
+                $this->inner->send($notifiables, $notification);
+            }
+        };
+        Notification::swap($failing);
+
+        $this->sign($this->party($envelope, 'r1@example.com'));
+
+        Exceptions::assertReported(fn (\RuntimeException $e) => $e->getMessage() === 'Mailkø nede');
+        $this->assertSame(2, $envelope->fresh()->current_round);
+        $this->assertNull($this->party($envelope, 'r2a@example.com')->notified_at);
+        $fake->assertSentToTimes($this->party($envelope, 'r2b@example.com'), DocumentReadyNotification::class, 1);
+
+        $failing->fail = false;
+        $this->sync();
+        $this->sync();
+
+        $fake->assertSentToTimes($this->party($envelope, 'r2a@example.com'), DocumentReadyNotification::class, 1);
+        $fake->assertSentToTimes($this->party($envelope, 'r2b@example.com'), DocumentReadyNotification::class, 1);
+    }
+
+    #[Test]
+    public function the_signer_check_accepts_the_role_enum_and_any_case(): void
+    {
+        $envelope = $this->service->createEnvelope(
+            title: 'Enum-rolle',
+            pdfPath: 'signing-room/original.pdf',
+            parties: [
+                ['name' => 'A', 'email' => 'a@example.com', 'role' => SigningPartyRole::Signer],
+                ['name' => 'Kopi', 'email' => 'v@example.com', 'role' => SigningPartyRole::Viewer],
+            ],
+        );
+        $this->assertSame(['signer', 'viewer'], $envelope->parties()->orderBy('id')->pluck('role')->all());
+
+        $upper = $this->service->createEnvelope(
+            title: 'Store bogstaver',
+            pdfPath: 'signing-room/original.pdf',
+            parties: [['name' => 'B', 'email' => 'b@example.com', 'role' => 'SIGNER']],
+        );
+        $this->assertSame(['signer'], $upper->parties()->pluck('role')->all());
+    }
+
+    #[Test]
+    public function the_backfill_skips_old_signatures_and_flags_the_event(): void
+    {
+        \Illuminate\Support\Facades\Event::fake([\Fountainhead\SigningRoom\Events\PartySignedEvent::class]);
+
+        $envelope = $this->sentEnvelope([
+            ['name' => 'Gammel', 'email' => 'old@example.com', 'signing_round' => 1],
+            ['name' => 'Nylig', 'email' => 'recent@example.com', 'signing_round' => 1],
+            ['name' => 'R2', 'email' => 'r2@example.com', 'signing_round' => 2],
+        ]);
+        foreach (['old@example.com' => 60 * 30, 'recent@example.com' => 10] as $email => $minutesAgo) {
+            $party = $this->party($envelope, $email);
+            $this->idura->markSigned($party->idura_signatory_id);
+            $party->update(['status' => SigningPartyStatus::Signed, 'signed_at' => now()->subMinutes($minutesAgo)]);
+        }
+
+        $this->sync();
+
+        \Illuminate\Support\Facades\Event::assertDispatchedTimes(\Fountainhead\SigningRoom\Events\PartySignedEvent::class, 1);
+        \Illuminate\Support\Facades\Event::assertDispatched(\Fountainhead\SigningRoom\Events\PartySignedEvent::class, fn ($e) => $e->party->email === 'recent@example.com' && $e->backfilled === true);
+    }
 }

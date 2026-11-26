@@ -102,10 +102,37 @@ class SigningEnvelope extends Model
      *
      * Returnerer true hvis den blev rapporteret nu.
      */
+    /**
+     * Markér åbne blokeringer som løst (envelope.unblocked), fx når
+     * fuldførelsen lykkes efter en forbigående fejl. Gør intet uden åbne.
+     */
+    public function resolveBlocks(): void
+    {
+        $lastUnblockedId = $this->events()
+            ->where('event_type', SigningEventType::EnvelopeUnblocked->value)
+            ->max('id');
+
+        $open = $this->events()
+            ->where('event_type', SigningEventType::EnvelopeBlocked->value)
+            ->when($lastUnblockedId, fn ($q) => $q->where('id', '>', $lastUnblockedId))
+            ->exists();
+
+        if ($open) {
+            $this->logEvent(SigningEventType::EnvelopeUnblocked);
+        }
+    }
+
     public function reportBlockedOnce(string $reason, \Throwable $exception, array $metadata = []): bool
     {
+        // Kun blokeringer efter seneste "løst": en ny fejl efter en løsning
+        // skal rapporteres igen.
+        $lastUnblockedId = $this->events()
+            ->where('event_type', SigningEventType::EnvelopeUnblocked->value)
+            ->max('id');
+
         $alreadyReported = $this->events()
             ->where('event_type', SigningEventType::EnvelopeBlocked->value)
+            ->when($lastUnblockedId, fn ($q) => $q->where('id', '>', $lastUnblockedId))
             ->get()
             ->contains(fn (SigningEvent $event) => ($event->metadata['reason'] ?? null) === $reason);
 

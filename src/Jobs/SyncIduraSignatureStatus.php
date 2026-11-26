@@ -20,6 +20,8 @@ class SyncIduraSignatureStatus implements ShouldQueue
 
     private const RECORD_GRACE_MINUTES = 5;
 
+    private const RECORD_BACKFILL_HOURS = 24;
+
     public function __construct()
     {
         $this->onQueue('signing-room');
@@ -50,6 +52,25 @@ class SyncIduraSignatureStatus implements ShouldQueue
     {
         $order = $idura->getOrderStatus($envelope->idura_signature_order_id);
 
+        // Ordrens status FØR underskrifterne behandles: for en udløbet eller
+        // annulleret ordre må intet rykkes, fuldføres eller mailes.
+        if ($order['status'] === 'EXPIRED') {
+            if ($envelope->status !== EnvelopeStatus::Expired) {
+                $envelope->update(['status' => EnvelopeStatus::Expired]);
+            }
+
+            return;
+        }
+
+        if (! in_array($order['status'], ['OPEN', 'CLOSED'], true)) {
+            $envelope->reportBlockedOnce(SigningRoomService::orderNotOpenReason($order['status']), new EnvelopeOrderNotOpenException(
+                "Kuvert {$envelope->id} ({$envelope->uuid}): Idura-ordren {$envelope->idura_signature_order_id} er {$order['status']}, "
+                . 'men kuverten er stadig åben her. Afgør manuelt, om den skal annulleres eller sendes igen.'
+            ), ['idura_status' => $order['status']]);
+
+            return;
+        }
+
         $handledSignature = false;
 
         foreach ($order['signatories'] ?? [] as $iduraSignatory) {
@@ -70,34 +91,19 @@ class SyncIduraSignatureStatus implements ShouldQueue
             }
         }
 
-        if ($order['status'] === 'EXPIRED' && $envelope->status !== EnvelopeStatus::Expired) {
-            $envelope->update(['status' => EnvelopeStatus::Expired]);
-
-            return;
-        }
-
-        // Annulleret hos Idura (eller en anden status, hvor ordren hverken er
-        // åben eller lukket af os): hverken rundeskift, mails eller
-        // lukkeforsøg. Én rapport med handlingen.
-        if (! in_array($order['status'], ['OPEN', 'CLOSED'], true)) {
-            $envelope->reportBlockedOnce(SigningRoomService::orderNotOpenReason($order['status']), new EnvelopeOrderNotOpenException(
-                "Kuvert {$envelope->id} ({$envelope->uuid}): Idura-ordren {$envelope->idura_signature_order_id} er {$order['status']}, "
-                . 'men kuverten er stadig åben her. Afgør manuelt, om den skal annulleres eller sendes igen.'
-            ), ['idura_status' => $order['status']]);
-
-            return;
-        }
-
         $envelope->refresh();
 
         // Underskrifter der blev claimet, men hvor resten (CPR, party.signed,
         // PartySignedEvent) aldrig kom igennem. Kun ældre end et par minutter,
         // så sync ikke kapløber med en webhook, der er i gang med netop det.
+        // Højst et døgn tilbage: ældre underskrifter giver ikke længere mening
+        // at melde som "underskrevet"; eventet markeres som indhentet.
         $envelope->parties()
             ->where('status', 'signed')
             ->where('signed_at', '<', now()->subMinutes(self::RECORD_GRACE_MINUTES))
+            ->where('signed_at', '>', now()->subHours(self::RECORD_BACKFILL_HOURS))
             ->get()
-            ->each(fn ($party) => $service->recordSignature($party));
+            ->each(fn ($party) => $service->recordSignature($party, backfilled: true));
 
         if ($envelope->isCompleted()) {
             // Fuldført, men status overskrevet (fx af en forsinket webhook):
@@ -129,6 +135,10 @@ class SyncIduraSignatureStatus implements ShouldQueue
 
             return;
         }
+
+        // En mail i den aktuelle runde fejlede (parten står stadig pending
+        // uden notified_at): prøv igen. Rører ikke allerede notificerede.
+        $service->notifyRoundParties($envelope, $envelope->current_round);
 
         $this->reportLegacyViewerBlockOnce($envelope);
     }

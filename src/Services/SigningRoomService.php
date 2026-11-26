@@ -38,7 +38,7 @@ class SigningRoomService
         ?int $createdBy = null,
     ): SigningEnvelope {
         $hasSigner = collect($parties)->contains(
-            fn (array $party) => ($party['role'] ?? SigningPartyRole::Signer->value) === SigningPartyRole::Signer->value
+            fn (array $party) => self::roleValue($party['role'] ?? null) === SigningPartyRole::Signer->value
         );
 
         if (! $hasSigner) {
@@ -70,7 +70,7 @@ class SigningRoomService
                 'email' => $partyData['email'],
                 'phone' => $partyData['phone'] ?? null,
                 'cpr_last_four' => $partyData['cpr_last_four'] ?? null,
-                'role' => $partyData['role'] ?? SigningPartyRole::Signer->value,
+                'role' => self::roleValue($partyData['role'] ?? null),
                 'signing_round' => $partyData['signing_round'] ?? 1,
                 'status' => SigningPartyStatus::Pending,
             ]);
@@ -195,6 +195,12 @@ class SigningRoomService
 
         $envelope = $party->envelope;
 
+        // Annulleret eller udløbet: underskriften registreres, men kuverten
+        // rykkes, fuldføres og mailes ikke.
+        if (in_array($envelope->status, [EnvelopeStatus::Cancelled, EnvelopeStatus::Expired], true)) {
+            return true;
+        }
+
         if ($envelope->isAllRoundsComplete()) {
             // Underskriften er gemt. Fejler fuldførelsen (Idura, disk),
             // rapporterer completeEnvelope det selv, og SyncIduraSignatureStatus
@@ -249,7 +255,7 @@ class SigningRoomService
      * parten. Kaldes af handleSigned og af SyncIduraSignatureStatus for parter,
      * der blev claimet, men hvor dette trin aldrig blev fuldført.
      */
-    public function recordSignature(SigningParty $party): void
+    public function recordSignature(SigningParty $party, bool $backfilled = false): void
     {
         $envelope = $party->envelope;
 
@@ -279,7 +285,7 @@ class SigningRoomService
 
         $envelope->logEvent(SigningEventType::PartySigned, $party);
 
-        PartySignedEvent::dispatch($envelope, $party);
+        PartySignedEvent::dispatch($envelope, $party, $backfilled);
     }
 
     /**
@@ -312,16 +318,29 @@ class SigningRoomService
      */
     public function notifyRoundParties(SigningEnvelope $envelope, int $round): void
     {
+        // Kun underskrivere, der endnu ikke er notificeret: så kan
+        // SyncIduraSignatureStatus kalde den igen for en runde, hvor en mail
+        // fejlede, uden at de andre får den to gange.
         $parties = $envelope->parties()
             ->where('signing_round', $round)
             ->where('role', SigningPartyRole::Signer->value)
+            ->where('status', SigningPartyStatus::Pending->value)
+            ->whereNull('notified_at')
             ->get();
 
         foreach ($parties as $index => $party) {
-            // Resend rate limit: 2 requests/sec — stagger queued sends 1s apart
-            $party->notify(
-                (new DocumentReadyNotification($envelope, $party))->delay($index),
-            );
+            // Resend rate limit: 2 requests/sec: stagger queued sends 1s apart.
+            // Én fejlende mail må ikke stoppe de andre; parten forbliver
+            // pending uden notified_at, og sync prøver igen.
+            try {
+                $party->notify(
+                    (new DocumentReadyNotification($envelope, $party))->delay($index),
+                );
+            } catch (\Throwable $e) {
+                report($e);
+
+                continue;
+            }
 
             $party->update([
                 'status' => SigningPartyStatus::Notified,
@@ -445,6 +464,10 @@ class SigningRoomService
             return false;
         }
 
+        // Claimets tidsstempel er også dets nøgle: kun den, der satte netop
+        // denne værdi, må frigive det eller afslutte fuldførelsen.
+        $claimedAt = now()->startOfSecond();
+
         $claimed = SigningEnvelope::query()
             ->whereKey($envelope->getKey())
             ->whereNull('completed_at')
@@ -453,7 +476,7 @@ class SigningRoomService
             ->where(fn ($q) => $q
                 ->whereNull('completion_started_at')
                 ->orWhere('completion_started_at', '<', now()->subMinutes(self::COMPLETION_CLAIM_MINUTES)))
-            ->update(['completion_started_at' => now()]);
+            ->update(['completion_started_at' => $claimedAt]);
 
         if ($claimed === 0) {
             return false;
@@ -464,23 +487,24 @@ class SigningRoomService
         try {
             $signedDocument = $this->closeOrderAndStore($envelope);
         } catch (\Throwable $e) {
-            $this->releaseCompletionClaim($envelope);
+            $this->releaseCompletionClaim($envelope, $claimedAt);
 
             // Samme fejl gentages typisk hver time, til nogen griber ind.
-            $envelope->reportBlockedOnce('completion_failed:' . $e::class . ':' . sha1($e->getMessage()), $e);
+            $envelope->reportBlockedOnce(self::completionFailureReason($e), $e);
 
             return false;
         }
 
         if ($signedDocument === false) {
-            $this->releaseCompletionClaim($envelope);
+            $this->releaseCompletionClaim($envelope, $claimedAt);
 
             return false;
         }
 
-        SigningEnvelope::query()
+        $finished = SigningEnvelope::query()
             ->whereKey($envelope->getKey())
             ->whereNull('completed_at')
+            ->where('completion_started_at', $claimedAt)
             ->update([
                 'status' => EnvelopeStatus::Completed->value,
                 'completed_at' => now(),
@@ -488,9 +512,16 @@ class SigningRoomService
                 'completion_started_at' => null,
             ]);
 
+        // Taber vi kapløbet (claimet blev overtaget og den anden fuldførte
+        // først), må vi hverken logge eller maile.
+        if ($finished === 0) {
+            return false;
+        }
+
         $envelope->refresh();
 
         $envelope->logEvent(SigningEventType::EnvelopeCompleted);
+        $envelope->resolveBlocks();
 
         // Every party is told the envelope is final: this mail is their only
         // notification of it, and viewers are attached precisely so they can
@@ -516,11 +547,31 @@ class SigningRoomService
         return true;
     }
 
-    private function releaseCompletionClaim(SigningEnvelope $envelope): void
+    private function releaseCompletionClaim(SigningEnvelope $envelope, \DateTimeInterface $claimedAt): void
     {
+        // Kun eget claim: er det overtaget i mellemtiden, er det ikke vores.
         SigningEnvelope::query()
             ->whereKey($envelope->getKey())
+            ->where('completion_started_at', $claimedAt)
             ->update(['completion_started_at' => null]);
+    }
+
+    /**
+     * Årsagsnøgle for en fejlet fuldførelse: undtagelsesklassen og, for
+     * Idura-HTTP-fejl, statuskoden. Ikke selve beskeden, som kan indeholde
+     * skiftende request-id'er og så blive rapporteret hver time.
+     */
+    public static function completionFailureReason(\Throwable $e): string
+    {
+        $reason = 'completion_failed:' . $e::class;
+
+        if (preg_match('/request failed with status (\d{3})/', $e->getMessage(), $m)) {
+            $reason .= ':http_' . $m[1];
+        } elseif (str_starts_with($e->getMessage(), 'Idura GraphQL errors:')) {
+            $reason .= ':graphql';
+        }
+
+        return $reason;
     }
 
     /**
@@ -601,9 +652,20 @@ class SigningRoomService
 
     private function isSigner(SigningParty $party): bool
     {
-        $role = $party->role instanceof SigningPartyRole ? $party->role->value : $party->role;
+        return self::roleValue($party->role) === SigningPartyRole::Signer->value;
+    }
 
-        return ($role ?? SigningPartyRole::Signer->value) === SigningPartyRole::Signer->value;
+    /**
+     * Rolle som streng: accepterer enum, streng (også store bogstaver) og null
+     * (= underskriver, som kolonnens standard).
+     */
+    private static function roleValue(SigningPartyRole|string|null $role): string
+    {
+        if ($role instanceof SigningPartyRole) {
+            return $role->value;
+        }
+
+        return $role === null || $role === '' ? SigningPartyRole::Signer->value : strtolower($role);
     }
 
     /**
