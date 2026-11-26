@@ -316,4 +316,18 @@ class IduraSignatureServiceTest extends TestCase
 
         $this->assertSame([], $this->service()->getOrderDocuments('order-gone'));
     }
+
+    #[Test]
+    public function add_signatory_maps_the_legacy_role_key_and_refuses_preapproved(): void
+    {
+        Http::fake([self::ENDPOINT => Http::response(['data' => ['addSignatory' => ['signatory' => [
+            'id' => 'sig-1', 'href' => 'https://x', 'reference' => 'ref-1', 'status' => 'OPEN', 'signatoryRole' => 'VIEWER',
+        ]]]])]);
+
+        $this->service()->addSignatories('order-123', [['reference' => 'ref-1', 'role' => 'viewer']]);
+        Http::assertSent(fn ($request) => $request['variables']['input']['signatoryRole'] === 'VIEWER');
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->service()->addSignatories('order-123', [['reference' => 'ref-2', 'preapproved' => true]]);
+    }
 }

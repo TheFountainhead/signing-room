@@ -93,7 +93,9 @@ class SigningRoomService
         // En kladde, hvis udløbsdato er passeret (gemt for længe siden), får
         // en frisk udløbsdato ved afsendelse. Ellers får Idura 0 eller færre
         // dage, alle links er ugyldige, og det daglige job udløber den straks.
-        if ($envelope->expires_at === null || $envelope->expires_at->isPast()) {
+        // Under et døgn tilbage tæller også: Idura får hele dage, og 0 dage er
+        // det samme som udløbet.
+        if ($envelope->expires_at === null || $envelope->expires_at->lt(now()->addDay())) {
             $envelope->update([
                 'expires_at' => now()->addDays((int) config('signing-room.defaults.expires_in_days', 30)),
             ]);
@@ -113,7 +115,7 @@ class SigningRoomService
             documentTitle: $envelope->title,
             webhookUrl: $webhookUrl,
             redirectUri: $redirectUri,
-            expiresInDays: (int) now()->diffInDays($envelope->expires_at),
+            expiresInDays: max(1, (int) now()->diffInDays($envelope->expires_at)),
         );
 
         $envelope->update([
@@ -517,6 +519,9 @@ class SigningRoomService
 
             $claimed = SigningParty::query()
                 ->whereKey($party->getKey())
+                // Også her (ikke kun i SELECT'en): en underskrift, der lander
+                // imellem, må ikke blive overskrevet med notified.
+                ->whereNotIn('status', [SigningPartyStatus::Signed->value, SigningPartyStatus::Rejected->value])
                 ->when(
                     $previousNotifiedAt === null,
                     fn ($q) => $q->whereNull('notified_at'),
@@ -541,6 +546,7 @@ class SigningRoomService
             } catch (\Throwable $e) {
                 SigningParty::query()
                     ->whereKey($party->getKey())
+                    ->where('status', SigningPartyStatus::Notified->value)
                     ->update(['status' => $previousStatus, 'notified_at' => $previousNotifiedAt]);
                 report($e);
 

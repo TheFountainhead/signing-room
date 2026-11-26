@@ -27,7 +27,7 @@ class SyncIduraSignatureStatus implements ShouldQueue, ShouldBeUnique
     private const RECORD_GRACE_MINUTES = 5;
 
     /** Låsen udløber, hvis en kørsel dør, så næste time kan køre. */
-    public int $uniqueFor = 3600;
+    public int $uniqueFor = 3300;
 
     private const RECORD_BACKFILL_HOURS = 24;
 
@@ -46,7 +46,16 @@ class SyncIduraSignatureStatus implements ShouldQueue, ShouldBeUnique
         }
 
         $envelopes = SigningEnvelope::query()
-            ->whereIn('status', [EnvelopeStatus::Sent, EnvelopeStatus::PartiallySigned])
+            ->where(fn ($q) => $q
+                ->whereIn('status', [EnvelopeStatus::Sent, EnvelopeStatus::PartiallySigned])
+                // Udløbet lokalt, men alle underskrivere har underskrevet og
+                // kuverten er ikke fuldført: fuldførelsen prøves igen, så længe
+                // Idura-ordren kan lukkes (ellers rapporteres den tabte PDF).
+                ->orWhere(fn ($q) => $q
+                    ->where('status', EnvelopeStatus::Expired)
+                    ->whereNull('completed_at')
+                    ->whereHas('parties', fn ($p) => $p->where('role', 'signer'))
+                    ->whereDoesntHave('parties', fn ($p) => $p->where('role', 'signer')->where('status', '!=', 'signed'))))
             ->whereNotNull('idura_signature_order_id')
             ->tap(fn ($query) => SigningEnvelope::onlyProcessable($query))
             ->get();

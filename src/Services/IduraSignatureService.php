@@ -156,6 +156,14 @@ GRAPHQL;
                 ];
             }
 
+            if (array_key_exists('preapproved', $signatory)) {
+                // Findes kun i SignatoryDocumentInput, ikke i AddSignatoryInput.
+                throw new \InvalidArgumentException('addSignatories: preapproved understøttes ikke (findes kun pr. dokument hos Idura).');
+            }
+
+            // Bagudkompatibel: den gamle nøgle 'role' betyder signatoryRole.
+            $signatory['signatory_role'] ??= $signatory['role'] ?? null;
+
             $signatoryInput = [
                 'signatureOrderId' => $orderId,
                 'reference' => $signatory['reference'],
@@ -298,8 +306,8 @@ GRAPHQL;
 
         $result = $this->query($query, ['id' => $orderId]);
 
-        // null for en ordre, Idura ikke længere kender: kalderen behandler det
-        // som manglende PDF (SignedDocumentUnavailableException).
+        // Et tomt array for en ordre, Idura ikke længere kender: kalderen
+        // behandler det som manglende PDF (SignedDocumentUnavailableException).
         return $result['signatureOrder'] ?? [];
     }
 

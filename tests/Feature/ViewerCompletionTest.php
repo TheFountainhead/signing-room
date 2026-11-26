@@ -2020,4 +2020,59 @@ class ViewerCompletionTest extends TestCase
 
         $this->assertSame(['signer'], $envelope->parties()->pluck('role')->all());
     }
+
+    #[Test]
+    public function a_signature_landing_during_round_notification_is_not_overwritten(): void
+    {
+        $envelope = $this->sentEnvelope([
+            ['name' => 'R1', 'email' => 'r1@example.com', 'signing_round' => 1],
+            ['name' => 'R2', 'email' => 'r2@example.com', 'signing_round' => 2],
+        ]);
+        $r2 = $this->party($envelope, 'r2@example.com');
+
+        // Lige efter at notifyRoundParties har valgt R2, underskriver R2.
+        $done = false;
+        \Illuminate\Support\Facades\DB::listen(function ($query) use (&$done, $r2) {
+            if (! $done && str_contains($query->sql, 'from "signing_parties"') && str_contains($query->sql, 'not exists')) {
+                $done = true;
+                \Illuminate\Support\Facades\DB::table('signing_parties')->where('id', $r2->id)->update(['status' => 'signed', 'signed_at' => now()]);
+            }
+        });
+
+        SigningEnvelope::whereKey($envelope->id)->update(['current_round' => 2]);
+        $this->service->notifyRoundParties($envelope->fresh(), 2);
+
+        $this->assertEquals(SigningPartyStatus::Signed, $r2->fresh()->status);
+        Notification::assertNotSentTo($r2, DocumentReadyNotification::class);
+    }
+
+    #[Test]
+    public function a_locally_expired_all_signed_envelope_is_completed_by_a_later_sync(): void
+    {
+        $envelope = $this->sentEnvelope([['name' => 'A', 'email' => 'a@example.com']]);
+        SigningEnvelope::whereKey($envelope->id)->update(['status' => EnvelopeStatus::Expired->value]);
+        $this->idura->failNextCloses = 1; // fuldførelsen i webhooken fejler
+
+        $this->sign($this->party($envelope, 'a@example.com'));
+        $this->assertEquals(EnvelopeStatus::Expired, $envelope->fresh()->status);
+
+        $this->sync();
+
+        $this->assertEquals(EnvelopeStatus::Completed, $envelope->fresh()->status);
+    }
+
+    #[Test]
+    public function a_draft_with_less_than_a_day_left_also_gets_a_fresh_expiry(): void
+    {
+        $draft = $this->service->createEnvelope(
+            title: 'Næsten udløbet',
+            pdfPath: 'signing-room/original.pdf',
+            parties: [['name' => 'A', 'email' => 'a@example.com']],
+        );
+        SigningEnvelope::whereKey($draft->id)->update(['expires_at' => now()->addHours(12)]);
+
+        $sent = $this->service->sendEnvelope($draft->fresh());
+
+        $this->assertTrue($sent->expires_at->gt(now()->addDays(2)));
+    }
 }
