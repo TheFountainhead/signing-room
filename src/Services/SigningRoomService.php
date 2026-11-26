@@ -351,11 +351,22 @@ class SigningRoomService
     {
         $envelope->refresh();
 
+        // En anden proces er i gang med at fuldføre: rør den ikke.
+        if ($this->hasFreshCompletionClaim($envelope)) {
+            return false;
+        }
+
         // Lokalt udløb (dagligt job), mens Idura-ordren måske stadig kan
-        // lukkes: har alle underskrevet, forsøges fuldførelsen først.
+        // lukkes: har alle underskrevet, forsøges fuldførelsen. Lykkes den ikke
+        // nu, udløber kuverten ikke lokalt; sync prøver igen, og udløber
+        // ordren hos Idura, rapporterer sync det.
         if (! $iduraExpired && ! $envelope->isCompleted() && $envelope->isAllRoundsComplete()) {
             $this->completeEnvelope($envelope);
             $envelope->refresh();
+
+            if (! $envelope->isCompleted()) {
+                return false;
+            }
         }
 
         if ($envelope->isCompleted()) {
@@ -367,15 +378,14 @@ class SigningRoomService
             return false;
         }
 
+        // Kun her, ved Idura-udløb: alle havde underskrevet, men kuverten blev
+        // aldrig fuldført. Samme nøgle som closeOrderAndStore bruger for en
+        // udløbet ordre, så det bliver én rapport.
         if ($envelope->isAllRoundsComplete()) {
-            $why = $iduraExpired
-                ? "Idura-ordren {$envelope->idura_signature_order_id} udløb, før kuverten blev fuldført"
-                : 'kuverten nåede sin udløbsdato, og fuldførelsen lykkedes ikke';
-
-            $envelope->reportBlockedOnce(self::orderNotOpenReason('EXPIRED').':all_signed', new EnvelopeOrderNotOpenException(
-                "Kuvert {$envelope->id} ({$envelope->uuid}): alle har underskrevet, men {$why}. "
+            $envelope->reportBlockedOnce(self::orderNotOpenReason('EXPIRED'), new EnvelopeOrderNotOpenException(
+                "Kuvert {$envelope->id} ({$envelope->uuid}): alle har underskrevet, men Idura-ordren {$envelope->idura_signature_order_id} udløb, før kuverten blev fuldført. "
                 . 'Den signerede PDF er ikke gemt her. Kontakt Idura om dokumentet, eller send kuverten igen.'
-            ), ['idura_status' => $iduraExpired ? 'EXPIRED' : 'local_expiry']);
+            ), ['idura_status' => 'EXPIRED']);
         }
 
         // Betinget: en fuldførelse, der bliver færdig i mellemtiden, må ikke
@@ -385,6 +395,9 @@ class SigningRoomService
             ->whereNull('completed_at')
             ->whereNull('signed_document')
             ->whereNotIn('status', [EnvelopeStatus::Completed->value, EnvelopeStatus::Expired->value, EnvelopeStatus::Cancelled->value])
+            ->where(fn ($q) => $q
+                ->whereNull('completion_started_at')
+                ->orWhere('completion_started_at', '<', now()->subMinutes(self::COMPLETION_CLAIM_MINUTES)))
             ->update(['status' => EnvelopeStatus::Expired->value]);
 
         $envelope->refresh();
@@ -672,6 +685,12 @@ class SigningRoomService
         }
 
         return true;
+    }
+
+    private function hasFreshCompletionClaim(SigningEnvelope $envelope): bool
+    {
+        return $envelope->completion_started_at !== null
+            && $envelope->completion_started_at->gt(now()->subMinutes(self::COMPLETION_CLAIM_MINUTES));
     }
 
     private function releaseCompletionClaim(SigningEnvelope $envelope, \DateTimeInterface $claimedAt): void

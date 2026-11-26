@@ -22,6 +22,8 @@ class SigningEnvelope extends Model
         'last_reminder_at' => 'datetime',
         'completed_at' => 'datetime',
         'cancelled_at' => 'datetime',
+        'completion_started_at' => 'datetime',
+        'last_synced_at' => 'datetime',
     ];
 
     protected static function booted(): void
@@ -143,20 +145,31 @@ class SigningEnvelope extends Model
      */
     public function reportBlockedOnce(string $reason, \Throwable $exception, array $metadata = []): bool
     {
-        // Kun åbne blokeringer: en ny fejl efter en løsning skal rapporteres
-        // igen.
-        $alreadyReported = $this->openBlocks()
-            ->contains(fn (SigningEvent $event) => ($event->metadata['reason'] ?? null) === $reason);
+        // Tjek og markør under en kort rækkelås på kuverten, så en webhook og
+        // sync, der rammer samme blokering samtidig, ikke begge rapporterer.
+        // Rapporten sendes efter låsen.
+        $logged = \Illuminate\Support\Facades\DB::transaction(function () use ($reason, $metadata) {
+            self::query()->whereKey($this->getKey())->lockForUpdate()->first();
 
-        if ($alreadyReported) {
-            return false;
+            // Kun åbne blokeringer: en ny fejl efter en løsning skal
+            // rapporteres igen.
+            $alreadyReported = $this->openBlocks()
+                ->contains(fn (SigningEvent $event) => ($event->metadata['reason'] ?? null) === $reason);
+
+            if ($alreadyReported) {
+                return false;
+            }
+
+            $this->logEvent(SigningEventType::EnvelopeBlocked, metadata: ['reason' => $reason] + $metadata);
+
+            return true;
+        });
+
+        if ($logged) {
+            report($exception);
         }
 
-        $this->logEvent(SigningEventType::EnvelopeBlocked, metadata: ['reason' => $reason] + $metadata);
-
-        report($exception);
-
-        return true;
+        return $logged;
     }
 
     public function isAllRoundsComplete(): bool

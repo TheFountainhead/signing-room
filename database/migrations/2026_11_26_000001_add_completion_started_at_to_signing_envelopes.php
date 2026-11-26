@@ -15,13 +15,16 @@ return new class extends Migration
     {
         Schema::table('signing_envelopes', function (Blueprint $table) {
             $table->timestamp('completion_started_at')->nullable()->after('completed_at');
+            // Seneste vellykkede sync af kuverten: afgrænser alderen på en
+            // underskrift, som sync finder ved polling.
+            $table->timestamp('last_synced_at')->nullable()->after('completion_started_at');
         });
     }
 
     public function down(): void
     {
         Schema::table('signing_envelopes', function (Blueprint $table) {
-            $table->dropColumn('completion_started_at');
+            $table->dropColumn(['completion_started_at', 'last_synced_at']);
         });
     }
 };

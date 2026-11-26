@@ -1271,7 +1271,7 @@ class ViewerCompletionTest extends TestCase
         $this->assertEquals(EnvelopeStatus::Expired, $envelope->fresh()->status);
         Exceptions::assertReported(fn (\Fountainhead\SigningRoom\Exceptions\EnvelopeOrderNotOpenException $e) => str_contains($e->getMessage(), 'udløb, før kuverten blev fuldført'));
         $this->assertSame(1, $envelope->events()->where('event_type', 'envelope.blocked')->get()
-            ->filter(fn ($e) => ($e->metadata['reason'] ?? '') === 'idura_order_expired:all_signed')->count());
+            ->filter(fn ($e) => ($e->metadata['reason'] ?? '') === 'idura_order_expired')->count());
     }
 
     #[Test]
@@ -1383,7 +1383,7 @@ class ViewerCompletionTest extends TestCase
     }
 
     #[Test]
-    public function the_daily_expiry_job_does_not_expire_a_completed_envelope_and_reports_a_lost_one(): void
+    public function the_daily_expiry_job_neither_expires_a_completed_envelope_nor_an_all_signed_one_it_could_not_complete(): void
     {
         Exceptions::fake();
 
@@ -1402,8 +1402,10 @@ class ViewerCompletionTest extends TestCase
         $this->app->call([new \Fountainhead\SigningRoom\Jobs\ExpireSigningEnvelopes, 'handle']);
 
         $this->assertEquals(EnvelopeStatus::Completed, $done->fresh()->status);
-        $this->assertEquals(EnvelopeStatus::Expired, $lost->fresh()->status);
-        Exceptions::assertReported(fn (\Fountainhead\SigningRoom\Exceptions\EnvelopeOrderNotOpenException $e) => str_contains($e->getMessage(), "Kuvert {$lost->id} "));
+        // Alle har underskrevet, og Idura-ordren er stadig åben: kuverten
+        // udløber ikke lokalt, så sync kan fuldføre den senere.
+        $this->assertNotEquals(EnvelopeStatus::Expired, $lost->fresh()->status);
+        $this->assertSame(0, $lost->events()->where('event_type', 'envelope.expired')->count());
     }
 
     #[Test]
@@ -1511,7 +1513,8 @@ class ViewerCompletionTest extends TestCase
 
         $envelope = $this->sentEnvelope([['name' => 'A', 'email' => 'a@example.com'], ['name' => 'B', 'email' => 'b@example.com']]);
         $a = $this->party($envelope, 'a@example.com');
-        $a->update(['notified_at' => now()->subDays(40)]); // inviteret for længe siden
+        // Gammel kuvert, aldrig synkroniseret før (fx første kørsel hos en host).
+        SigningEnvelope::whereKey($envelope->id)->update(['created_at' => now()->subDays(40), 'last_synced_at' => null]);
         $this->idura->markSigned($a->idura_signatory_id);
 
         $this->sync();
@@ -1627,5 +1630,75 @@ class ViewerCompletionTest extends TestCase
         $this->sync();
 
         Exceptions::assertReportedCount(2);
+    }
+
+    #[Test]
+    public function a_polled_signature_after_a_recent_successful_sync_fires_the_event(): void
+    {
+        \Illuminate\Support\Facades\Event::fake([\Fountainhead\SigningRoom\Events\PartySignedEvent::class]);
+
+        $envelope = $this->sentEnvelope([['name' => 'A', 'email' => 'a@example.com'], ['name' => 'B', 'email' => 'b@example.com']]);
+        SigningEnvelope::whereKey($envelope->id)->update(['created_at' => now()->subDays(40)]);
+
+        $this->sync(); // vellykket sync: A er stadig usigneret, last_synced_at sættes
+        $this->assertNotNull($envelope->fresh()->last_synced_at);
+
+        // A underskriver (fx dag 3), webhooken går tabt; næste sync finder den.
+        $this->idura->markSigned($this->party($envelope, 'a@example.com')->idura_signatory_id);
+        $this->sync();
+
+        \Illuminate\Support\Facades\Event::assertDispatched(\Fountainhead\SigningRoom\Events\PartySignedEvent::class, fn ($e) => $e->party->email === 'a@example.com');
+    }
+
+    #[Test]
+    public function the_daily_expiry_job_leaves_an_envelope_being_completed_alone(): void
+    {
+        Exceptions::fake();
+
+        $envelope = $this->sentEnvelope([['name' => 'A', 'email' => 'a@example.com']]);
+        $a = $this->party($envelope, 'a@example.com');
+        $a->update(['status' => SigningPartyStatus::Signed, 'signed_at' => now()]);
+        // En webhook er midt i fuldførelsen (frisk claim).
+        SigningEnvelope::whereKey($envelope->id)->update(['completion_started_at' => now(), 'expires_at' => now()->subMinute()]);
+
+        $this->app->call([new \Fountainhead\SigningRoom\Jobs\ExpireSigningEnvelopes, 'handle']);
+
+        $this->assertNotEquals(EnvelopeStatus::Expired, $envelope->fresh()->status);
+        $this->assertSame(0, $this->idura->closeCalls);
+        Exceptions::assertNothingReported();
+    }
+
+    #[Test]
+    public function an_idura_expiry_during_a_running_completion_is_not_reported_as_lost(): void
+    {
+        Exceptions::fake();
+
+        $envelope = $this->sentEnvelope([['name' => 'A', 'email' => 'a@example.com']]);
+        $this->party($envelope, 'a@example.com')->update(['status' => SigningPartyStatus::Signed, 'signed_at' => now()]);
+        SigningEnvelope::whereKey($envelope->id)->update(['completion_started_at' => now()]);
+
+        $this->assertFalse($this->service->expireEnvelope($envelope, iduraExpired: true));
+
+        Exceptions::assertNothingReported();
+        $this->assertNotEquals(EnvelopeStatus::Expired, $envelope->fresh()->status);
+    }
+
+    #[Test]
+    public function the_backfill_of_a_polled_claim_follows_the_same_age_rule(): void
+    {
+        \Illuminate\Support\Facades\Event::fake([\Fountainhead\SigningRoom\Events\PartySignedEvent::class]);
+
+        $envelope = $this->sentEnvelope([['name' => 'A', 'email' => 'a@example.com'], ['name' => 'B', 'email' => 'b@example.com']]);
+        SigningEnvelope::whereKey($envelope->id)->update(['created_at' => now()->subDays(40), 'last_synced_at' => null]);
+
+        // Polling claimede for 10 min siden og døde før party.signed.
+        $a = $this->party($envelope, 'a@example.com');
+        $this->idura->markSigned($a->idura_signatory_id);
+        $a->forceFill(['status' => SigningPartyStatus::Signed, 'signed_at' => now()->subMinutes(10), 'signature_data' => ['synced_from_polling' => true]])->save();
+
+        $this->sync();
+
+        \Illuminate\Support\Facades\Event::assertNotDispatched(\Fountainhead\SigningRoom\Events\PartySignedEvent::class);
+        $this->assertSame(1, $envelope->events()->where('event_type', 'party.signed')->where('signing_party_id', $a->id)->count());
     }
 }

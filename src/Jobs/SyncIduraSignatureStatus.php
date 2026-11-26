@@ -47,8 +47,10 @@ class SyncIduraSignatureStatus implements ShouldQueue
             try {
                 $this->syncEnvelope($envelope, $idura, $service);
 
-                // Synkroniseringen lykkedes: en tidligere sync-fejl er løst.
+                // Synkroniseringen lykkedes: en tidligere sync-fejl er løst,
+                // og tidspunktet afgrænser alderen på næste kørsels fund.
                 $envelope->resolveBlocks('sync_failed:');
+                SigningEnvelope::query()->whereKey($envelope->getKey())->update(['last_synced_at' => now()]);
             } catch (\Throwable $e) {
                 // Fx et Idura-nedbrud eller forkerte credentials: én rapport pr.
                 // kuvert og fejltype, ikke én i timen.
@@ -110,7 +112,7 @@ class SyncIduraSignatureStatus implements ShouldQueue
                 // underskriften, har den også selv forsøgt fuldførelsen.
                 // Fundet ved polling: webhooken kom aldrig, og underskriften kan
                 // være gammel. Eventet markeres som indhentet.
-                if ($service->handleSigned($party, ['synced_from_polling' => true], backfilled: true, dispatchEvent: self::isRecentlyInvited($party))) {
+                if ($service->handleSigned($party, ['synced_from_polling' => true], backfilled: true, dispatchEvent: self::isSignatureAgeBounded($envelope))) {
                     $handledSignature = true;
                 }
             }
@@ -128,7 +130,13 @@ class SyncIduraSignatureStatus implements ShouldQueue
             ->where('signed_at', '<', now()->subMinutes(self::RECORD_GRACE_MINUTES))
             ->where('signed_at', '>', now()->subHours(self::RECORD_BACKFILL_HOURS))
             ->get()
-            ->each(fn ($party) => $service->recordSignature($party, backfilled: true));
+            // En underskrift claimet ved polling har signed_at = polling-tid,
+            // ikke underskriftstid: samme aldersregel som ved polling.
+            ->each(fn ($party) => $service->recordSignature(
+                $party,
+                backfilled: true,
+                dispatchEvent: ! ($party->signature_data['synced_from_polling'] ?? false) || self::isSignatureAgeBounded($envelope),
+            ));
 
         if ($envelope->isCompleted()) {
             // Fuldført, men status overskrevet (fx af en forsinket webhook):
@@ -170,14 +178,20 @@ class SyncIduraSignatureStatus implements ShouldQueue
     }
 
     /**
-     * Idura oplyser ikke, hvornår der blev underskrevet. Blev parten inviteret
-     * inden for RECORD_BACKFILL_HOURS, er underskriften højst så gammel; ellers
-     * er alderen ukendt, og PartySignedEvent affyres ikke (host-listeners
-     * fakturerer og mailer pr. event).
+     * Idura oplyser ikke, hvornår der blev underskrevet. Alderen på en
+     * underskrift fundet ved polling er afgrænset, hvis kuverten blev oprettet
+     * inden for RECORD_BACKFILL_HOURS, eller hvis en tidligere vellykket sync
+     * af kuverten (last_synced_at) ligger inden for den tid: så var parten
+     * usigneret dengang. Ellers (fx første kørsel hos en host, hvor jobbene
+     * aldrig har kørt) er alderen ukendt, og PartySignedEvent affyres ikke:
+     * host-listeners fakturerer og mailer pr. event.
      */
-    private static function isRecentlyInvited(\Fountainhead\SigningRoom\Models\SigningParty $party): bool
+    private static function isSignatureAgeBounded(SigningEnvelope $envelope): bool
     {
-        return $party->notified_at !== null && $party->notified_at->gt(now()->subHours(self::RECORD_BACKFILL_HOURS));
+        $cutoff = now()->subHours(self::RECORD_BACKFILL_HOURS);
+
+        return ($envelope->created_at !== null && $envelope->created_at->gt($cutoff))
+            || ($envelope->last_synced_at !== null && $envelope->last_synced_at->gt($cutoff));
     }
 
     /**
@@ -196,7 +210,7 @@ class SyncIduraSignatureStatus implements ShouldQueue
                 ->first();
 
             if ($party && $party->status->value !== 'signed') {
-                $service->handleSigned($party, ['synced_from_polling' => true], progress: false, backfilled: true, dispatchEvent: self::isRecentlyInvited($party));
+                $service->handleSigned($party, ['synced_from_polling' => true], progress: false, backfilled: true, dispatchEvent: self::isSignatureAgeBounded($envelope));
             }
         }
     }
