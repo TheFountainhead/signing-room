@@ -50,8 +50,13 @@ class SendSigningReminders implements ShouldQueue
                 continue;
             }
 
+            // Kun parter, der har fået deres runde-mail: en part uden
+            // notified_at venter på DocumentReady (sync prøver igen), og en
+            // påmindelse ville sætte notified_at og få den til at blive
+            // sprunget over.
             $unsignedParties = $envelope->unsignedCurrentRoundParties()
                 ->where('role', 'signer')
+                ->whereNotNull('notified_at')
                 ->get();
 
             foreach ($unsignedParties as $party) {

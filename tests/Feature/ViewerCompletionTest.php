@@ -1901,4 +1901,63 @@ class ViewerCompletionTest extends TestCase
 
         $this->assertTrue($envelope->fresh()->hasOpenBlock('idura_order_'));
     }
+
+    #[Test]
+    public function an_order_block_is_resolved_when_idura_returns_the_order_again(): void
+    {
+        Exceptions::fake();
+        $envelope = $this->sentEnvelope([['name' => 'A', 'email' => 'a@example.com']]);
+
+        $this->idura->orderMissing = true;
+        $this->sync();
+        $this->assertTrue($envelope->fresh()->hasOpenBlock('idura_order_'));
+
+        $this->idura->orderMissing = false;
+        $this->sync();
+        $this->assertFalse($envelope->fresh()->hasOpenBlock('idura_order_'));
+    }
+
+    #[Test]
+    public function the_last_signature_on_a_locally_expired_envelope_still_completes_it(): void
+    {
+        $envelope = $this->sentEnvelope([['name' => 'A', 'email' => 'a@example.com']]);
+        // Det daglige job satte den udløbet lokalt; Idura-ordren er stadig åben.
+        SigningEnvelope::whereKey($envelope->id)->update(['status' => EnvelopeStatus::Expired->value]);
+
+        $this->sign($this->party($envelope, 'a@example.com'));
+
+        $this->assertEquals(EnvelopeStatus::Completed, $envelope->fresh()->status);
+        Notification::assertSentTo($this->party($envelope, 'a@example.com'), EnvelopeCompletedNotification::class);
+    }
+
+    #[Test]
+    public function a_draft_is_not_expired_by_the_daily_job(): void
+    {
+        $draft = SigningEnvelope::create([
+            'title' => 'Kladde', 'status' => EnvelopeStatus::Draft,
+            'original_document' => 'signing-room/original.pdf',
+            'total_rounds' => 1, 'current_round' => 1, 'expires_at' => now()->subDay(),
+        ]);
+
+        $this->app->call([new \Fountainhead\SigningRoom\Jobs\ExpireSigningEnvelopes, 'handle']);
+
+        $this->assertEquals(EnvelopeStatus::Draft, $draft->fresh()->status);
+        $this->assertFalse($this->service->expireEnvelope($draft));
+        $this->assertEquals(EnvelopeStatus::Draft, $draft->fresh()->status);
+    }
+
+    #[Test]
+    public function a_late_rejection_does_not_overwrite_a_signature(): void
+    {
+        $creator = $this->creator();
+        $envelope = $this->sentEnvelope([['name' => 'A', 'email' => 'a@example.com'], ['name' => 'B', 'email' => 'b@example.com']], $creator->id);
+        $a = $this->party($envelope, 'a@example.com');
+        $stale = $a->fresh(); // indlæst før underskriften
+
+        $this->sign($a);
+        $this->service->handleRejected($stale, 'for sent');
+
+        $this->assertEquals(SigningPartyStatus::Signed, $a->fresh()->status);
+        Notification::assertNotSentTo($creator, \Fountainhead\SigningRoom\Notifications\PartyRejectedNotification::class);
+    }
 }

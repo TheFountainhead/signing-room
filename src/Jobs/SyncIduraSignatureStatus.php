@@ -112,6 +112,11 @@ class SyncIduraSignatureStatus implements ShouldQueue, ShouldBeUnique
             return true;
         }
 
+        // Ordren er OPEN eller CLOSED igen: en tidligere idura_order_-blokering
+        // (fx en midlertidigt ukendt ordre) er løst, så påmindelser og
+        // rapportering virker igen.
+        $envelope->resolveBlocks('idura_order_');
+
         $handledSignature = false;
 
         foreach ($order['signatories'] ?? [] as $iduraSignatory) {

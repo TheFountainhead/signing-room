@@ -30,10 +30,10 @@ class ExpireSigningEnvelopes implements ShouldQueue
         }
 
         SigningEnvelope::query()
-            ->whereNotIn('status', [
-                EnvelopeStatus::Completed,
-                EnvelopeStatus::Cancelled,
-                EnvelopeStatus::Expired,
+            // Kun sendte kuverter: en kladde udløber ikke (den kan stadig sendes).
+            ->whereIn('status', [
+                EnvelopeStatus::Sent,
+                EnvelopeStatus::PartiallySigned,
             ])
             ->where('expires_at', '<', now())
             ->tap(fn ($query) => SigningEnvelope::onlyProcessable($query))

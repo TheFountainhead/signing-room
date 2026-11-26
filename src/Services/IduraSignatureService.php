@@ -242,8 +242,7 @@ GRAPHQL;
 
     /**
      * Fetch the current status of a signature order (for fallback polling).
-     */
-    /**
+     *
      * @return array|null null når Idura ikke kender ordren (slettet/ukendt)
      */
     public function getOrderStatus(string $orderId): ?array

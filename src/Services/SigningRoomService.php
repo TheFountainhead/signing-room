@@ -173,8 +173,7 @@ class SigningRoomService
 
     /**
      * Handle a party signing event from the webhook.
-     */
-    /**
+     *
      * @param  bool  $progress  false: registrér kun underskriften (CPR, event),
      *     uden rundeskift, fuldførelse eller mails. Bruges, når Idura-ordren er
      *     udløbet eller annulleret, men underskriften blev givet før.
@@ -219,8 +218,15 @@ class SigningRoomService
         $envelope = $party->envelope;
 
         // Annulleret eller udløbet: underskriften registreres, men kuverten
-        // rykkes, fuldføres og mailes ikke.
+        // rykkes og mailes ikke.
         if (! $progress || in_array($envelope->status, [EnvelopeStatus::Cancelled, EnvelopeStatus::Expired], true)) {
+            // Udløbet lokalt (dagligt job), mens Idura-ordren måske stadig er
+            // åben: kom den sidste underskrift alligevel, forsøges fuldførelsen
+            // (completeEnvelope rapporterer selv, hvis ordren ikke kan lukkes).
+            if ($progress && $envelope->status === EnvelopeStatus::Expired && $envelope->isAllRoundsComplete()) {
+                $this->completeEnvelope($envelope);
+            }
+
             return true;
         }
 
@@ -281,8 +287,7 @@ class SigningRoomService
      * Idempotent: gør intet, hvis party.signed-eventet allerede findes for
      * parten. Kaldes af handleSigned og af SyncIduraSignatureStatus for parter,
      * der blev claimet, men hvor dette trin aldrig blev fuldført.
-     */
-    /**
+     *
      * @param  bool  $dispatchEvent  false: party.signed logges, men
      *     PartySignedEvent affyres ikke (fx en underskrift fundet ved polling,
      *     hvis alder er ukendt, så host-listeners ikke fakturerer eller mailer
@@ -414,7 +419,7 @@ class SigningRoomService
             ->whereKey($envelope->getKey())
             ->whereNull('completed_at')
             ->whereNull('signed_document')
-            ->whereNotIn('status', [EnvelopeStatus::Completed->value, EnvelopeStatus::Expired->value, EnvelopeStatus::Cancelled->value])
+            ->whereIn('status', [EnvelopeStatus::Sent->value, EnvelopeStatus::PartiallySigned->value])
             ->where(fn ($q) => $q
                 ->whereNull('completion_started_at')
                 ->orWhere('completion_started_at', '<', now()->subMinutes(self::COMPLETION_CLAIM_MINUTES)))
@@ -444,16 +449,22 @@ class SigningRoomService
      */
     public function handleRejected(SigningParty $party, ?string $reason = null): void
     {
-        if ($party->status === SigningPartyStatus::Rejected) {
+        // Betinget: en sen eller samtidig afvisning må ikke overskrive en
+        // underskrift (eller en allerede registreret afvisning).
+        $rejected = SigningParty::query()
+            ->whereKey($party->getKey())
+            ->whereNotIn('status', [SigningPartyStatus::Signed->value, SigningPartyStatus::Rejected->value])
+            ->update([
+                'status' => SigningPartyStatus::Rejected->value,
+                'rejected_at' => now(),
+                'rejection_reason' => $reason,
+            ]);
+
+        if ($rejected === 0) {
             return;
         }
 
-        $party->update([
-            'status' => SigningPartyStatus::Rejected,
-            'rejected_at' => now(),
-            'rejection_reason' => $reason,
-        ]);
-
+        $party->refresh();
         $envelope = $party->envelope;
 
         $envelope->logEvent(SigningEventType::PartyRejected, $party, [
