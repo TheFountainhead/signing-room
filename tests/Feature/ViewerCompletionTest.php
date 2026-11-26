@@ -2075,4 +2075,531 @@ class ViewerCompletionTest extends TestCase
 
         $this->assertTrue($sent->expires_at->gt(now()->addDays(2)));
     }
+
+    /**
+     * Kl. 10, og dagens daglige runde er allerede taget, så testen ikke
+     * afhænger af uret.
+     */
+    private function outsideDailySlot(): void
+    {
+        $this->travelTo(now()->startOfDay()->setHour(10));
+        \Illuminate\Support\Facades\Cache::put(SyncIduraSignatureStatus::DAILY_RETRY_CACHE_KEY.':'.now()->toDateString(), true, now()->addDay());
+    }
+
+    /** Næste dag kl. 04: dagens daglige runde er ikke taget endnu. */
+    private function inDailySlot(): void
+    {
+        $this->travelTo(now()->startOfDay()->addDay()->setHour(4)->setMinute(0));
+    }
+
+    private function expiredAllSigned(string $email, \DateTimeInterface $signedAt): SigningEnvelope
+    {
+        $this->outsideDailySlot();
+        $this->idura->orderStatus = 'OPEN';
+        $envelope = $this->sentEnvelope([['name' => $email, 'email' => $email]]);
+        $party = $this->party($envelope, $email);
+        $this->idura->markSigned($party->idura_signatory_id);
+        $party->update(['status' => SigningPartyStatus::Signed, 'signed_at' => $signedAt]);
+        SigningEnvelope::whereKey($envelope->id)->update(['status' => EnvelopeStatus::Expired->value, 'expires_at' => now()->subMonths(2)]);
+
+        return $envelope;
+    }
+
+    #[Test]
+    public function expired_all_signed_envelopes_are_retried_by_the_age_of_the_last_signature(): void
+    {
+        $inside = $this->expiredAllSigned('inside@example.com', now()->subDays(13));
+        $outside = $this->expiredAllSigned('outside@example.com', now()->subDays(15));
+
+        $this->sync();
+
+        $this->assertEquals(EnvelopeStatus::Completed, $inside->fresh()->status, 'Seneste underskrift for 13 dage siden: genforsøges.');
+        $this->assertEquals(EnvelopeStatus::Expired, $outside->fresh()->status, 'Seneste underskrift for 15 dage siden og ingen blokering: historik, røres ikke.');
+        $this->assertNull($outside->fresh()->last_synced_at, 'Den gamle kuvert må ikke engang slås op hos Idura.');
+    }
+
+    #[Test]
+    public function an_old_expired_envelope_with_a_failed_attempt_keeps_being_retried(): void
+    {
+        $old = $this->expiredAllSigned('old@example.com', now()->subMonths(2));
+        $old->logEvent(\Fountainhead\SigningRoom\Enums\SigningEventType::EnvelopeBlocked, metadata: ['reason' => 'completion_failed:RuntimeException:http_503']);
+
+        $this->sync();
+
+        $this->assertEquals(EnvelopeStatus::Completed, $old->fresh()->status);
+    }
+
+    #[Test]
+    public function an_envelope_reported_as_lost_is_not_polled_every_hour(): void
+    {
+        $lost = $this->expiredAllSigned('lost@example.com', now()->subDays(2));
+        $lost->logEvent(\Fountainhead\SigningRoom\Enums\SigningEventType::EnvelopeBlocked, metadata: ['reason' => 'idura_order_expired']);
+        $calls = $this->idura->orderStatusCalls;
+
+        $this->sync();
+
+        $this->assertSame($calls, $this->idura->orderStatusCalls);
+    }
+
+    #[Test]
+    public function an_old_envelope_with_only_a_resolved_sync_failure_is_not_reprocessed(): void
+    {
+        $old = $this->expiredAllSigned('old@example.com', now()->subMonths(2));
+        $this->oldBlock($old, ['reason' => 'sync_failed:RuntimeException:http_503'], now()->subDays(20));
+        $old->logEvent(\Fountainhead\SigningRoom\Enums\SigningEventType::EnvelopeUnblocked, metadata: ['reason_prefix' => 'sync_failed:'])
+            ->forceFill(['created_at' => now()->subDays(19)])->save();
+        $calls = $this->idura->orderStatusCalls;
+
+        $this->sync();
+        // Heller ikke i den daglige time: blokeringen er løst.
+        $this->inDailySlot();
+        $this->sync();
+
+        $this->assertSame($calls, $this->idura->orderStatusCalls);
+        $this->assertEquals(EnvelopeStatus::Expired, $old->fresh()->status);
+    }
+
+    #[Test]
+    public function an_order_reported_as_cancelled_is_not_polled_every_hour_either(): void
+    {
+        $cancelled = $this->expiredAllSigned('cancelled@example.com', now()->subDays(2));
+        $cancelled->logEvent(\Fountainhead\SigningRoom\Enums\SigningEventType::EnvelopeBlocked, metadata: ['reason' => 'idura_order_cancelled']);
+        $calls = $this->idura->orderStatusCalls;
+
+        $this->sync();
+
+        $this->assertSame($calls, $this->idura->orderStatusCalls);
+    }
+
+    #[Test]
+    public function an_old_envelope_whose_order_idura_did_not_know_keeps_being_polled(): void
+    {
+        // idura_order_missing kan være forbigående: ordren dukker op igen, og
+        // så skal kuverten fuldføres, selv om underskriften er gammel. Selve
+        // blokeringen holder kuverten med i EXPIRED_RETRY_DAYS (se
+        // a_temporary_block_keeps_an_old_envelope_retried_...).
+        $old = $this->expiredAllSigned('missing@example.com', now()->subMonths(2));
+        $old->logEvent(\Fountainhead\SigningRoom\Enums\SigningEventType::EnvelopeBlocked, metadata: ['reason' => 'idura_order_missing']);
+
+        $this->sync();
+
+        $this->assertEquals(EnvelopeStatus::Completed, $old->fresh()->status);
+    }
+
+    #[Test]
+    public function an_old_envelope_blocked_by_a_legacy_viewer_is_completed_once_the_viewer_is_removed(): void
+    {
+        // Operatøren har fjernet den gamle kopimodtager hos Idura (her: ingen
+        // åben signatory tilbage), men blokeringen står stadig åben her.
+        $old = $this->expiredAllSigned('legacy@example.com', now()->subMonths(2));
+        $old->logEvent(\Fountainhead\SigningRoom\Enums\SigningEventType::EnvelopeBlocked, metadata: ['reason' => 'legacy_viewer_signatory:sig-x']);
+
+        $this->sync();
+
+        $this->assertEquals(EnvelopeStatus::Completed, $old->fresh()->status);
+    }
+
+    private function oldBlock(SigningEnvelope $envelope, array $metadata, \DateTimeInterface $at): void
+    {
+        $event = $envelope->logEvent(\Fountainhead\SigningRoom\Enums\SigningEventType::EnvelopeBlocked, metadata: $metadata);
+        $event->forceFill(['created_at' => $at])->save();
+    }
+
+    #[Test]
+    public function a_temporary_block_keeps_an_old_envelope_retried_for_fourteen_days_after_it_was_reported(): void
+    {
+        $recent = $this->expiredAllSigned('recent@example.com', now()->subMonths(2));
+        $this->oldBlock($recent, ['reason' => 'idura_order_missing'], now()->subDays(13));
+        $stale = $this->expiredAllSigned('stale@example.com', now()->subMonths(2));
+        $this->oldBlock($stale, ['reason' => 'completion_failed:RuntimeException:http_503'], now()->subDays(15));
+
+        $this->sync();
+
+        $this->assertEquals(EnvelopeStatus::Completed, $recent->fresh()->status, 'Rapporteret for 13 dage siden: genforsøges.');
+        $this->assertEquals(EnvelopeStatus::Expired, $stale->fresh()->status, 'Rapporteret for 15 dage siden: står åben til manuel handling.');
+        $this->assertNull($stale->fresh()->last_synced_at);
+    }
+
+    #[Test]
+    public function an_old_legacy_viewer_block_is_retried_once_a_day_however_old_it_is(): void
+    {
+        $old = $this->expiredAllSigned('legacy-old@example.com', now()->subMonths(3));
+        $this->oldBlock($old, ['reason' => 'legacy_viewer_signatory:sig-x'], now()->subMonths(2));
+        $calls = $this->idura->orderStatusCalls;
+
+        $this->sync();
+        $this->assertSame($calls, $this->idura->orderStatusCalls, 'Uden for den daglige time: ikke hver time.');
+
+        $this->inDailySlot();
+        $this->sync();
+
+        $this->assertEquals(EnvelopeStatus::Completed, $old->fresh()->status);
+    }
+
+    #[Test]
+    public function a_cleared_block_restarts_the_window_so_an_unfinished_envelope_is_not_dropped(): void
+    {
+        // Kørsel 1 ophæver idura_order_missing, men en anden proces holder
+        // fuldførelsen: ikke fuldført og ingen ny blokering. Kørsel 2 skal
+        // stadig tage den, selv om underskriften er gammel.
+        $old = $this->expiredAllSigned('cleared@example.com', now()->subMonths(2));
+        $this->oldBlock($old, ['reason' => 'idura_order_missing'], now()->subDays(13));
+        SigningEnvelope::whereKey($old->id)->update(['completion_started_at' => now()]);
+
+        $this->sync();
+        $this->assertEquals(EnvelopeStatus::Expired, $old->fresh()->status, 'Forudsætning: kørsel 1 fuldfører ikke.');
+        $this->assertFalse($old->fresh()->hasOpenBlock('idura_order_missing'), 'Forudsætning: blokeringen er ophævet.');
+
+        // To dage senere: blokeringen er 15 dage gammel, kun ophævelsen er
+        // inden for vinduet.
+        SigningEnvelope::whereKey($old->id)->update(['completion_started_at' => null]);
+        $this->travel(2)->days();
+        $this->sync();
+        $this->travelBack();
+
+        $this->assertEquals(EnvelopeStatus::Completed, $old->fresh()->status);
+    }
+
+    #[Test]
+    public function an_unexpected_order_status_is_not_final_for_an_expired_envelope(): void
+    {
+        $envelope = $this->expiredAllSigned('pending@example.com', now()->subDays(2));
+        $envelope->logEvent(\Fountainhead\SigningRoom\Enums\SigningEventType::EnvelopeBlocked, metadata: ['reason' => 'idura_order_pending']);
+
+        $this->sync();
+
+        $this->assertEquals(EnvelopeStatus::Completed, $envelope->fresh()->status, 'Idura returnerer OPEN igen: kuverten fuldføres.');
+    }
+
+    #[Test]
+    public function an_old_resolved_legacy_viewer_block_does_not_keep_an_envelope_retried(): void
+    {
+        // Kopimodtagerblokeringen er ophævet for længe siden: kuverten er
+        // historik, selv om prefiltret ser den gamle blokering.
+        $old = $this->expiredAllSigned('legacy-resolved@example.com', now()->subMonths(3));
+        $this->oldBlock($old, ['reason' => 'legacy_viewer_signatory:sig-x'], now()->subMonths(2));
+        $old->logEvent(\Fountainhead\SigningRoom\Enums\SigningEventType::EnvelopeUnblocked, metadata: ['reason_prefix' => 'legacy_viewer_signatory'])
+            ->forceFill(['created_at' => now()->subMonths(2)->addDay()])->save();
+        $calls = $this->idura->orderStatusCalls;
+
+        $this->sync();
+        // Heller ikke i den daglige runde: blokeringen er løst, og kuverten
+        // har ingen kopimodtager med Idura-id.
+        $this->inDailySlot();
+        $this->sync();
+
+        $this->assertSame($calls, $this->idura->orderStatusCalls);
+    }
+
+    #[Test]
+    public function an_old_envelope_that_expired_before_the_legacy_report_existed_is_reported_and_then_completed(): void
+    {
+        // Udløbet lokalt før #20: ingen blokering, ingen aktivitet i vinduet,
+        // men en kopimodtager står stadig som SIGNER hos Idura.
+        Exceptions::fake();
+        $this->idura->orderStatus = 'OPEN';
+        $envelope = $this->sentEnvelope([
+            ['name' => 'Underskriver', 'email' => 'old-signer@example.com'],
+            ['name' => 'Kopi', 'email' => 'old-viewer@example.com', 'role' => SigningPartyRole::Viewer->value],
+        ]);
+        $legacyId = $this->addLegacyViewer($envelope, 'old-viewer@example.com');
+        $signer = $this->party($envelope, 'old-signer@example.com');
+        $this->idura->markSigned($signer->idura_signatory_id);
+        $signer->update(['status' => SigningPartyStatus::Signed, 'signed_at' => now()->subMonths(2)]);
+        SigningEnvelope::whereKey($envelope->id)->update(['status' => EnvelopeStatus::Expired->value, 'expires_at' => now()->subMonths(1)]);
+
+        $this->outsideDailySlot();
+        $this->sync();
+        Exceptions::assertNothingReported();
+
+        $this->inDailySlot();
+        $this->sync();
+        $this->travel(1)->day();
+        $this->sync();
+
+        Exceptions::assertReportedCount(1);
+        Exceptions::assertReported(fn (\Fountainhead\SigningRoom\Exceptions\EnvelopeBlockedByViewerException $e) => str_contains($e->getMessage(), "slet viewer-signatory {$legacyId} hos Idura"));
+        $this->assertEquals(EnvelopeStatus::Expired, $envelope->fresh()->status);
+
+        // Operatøren retter det måneder senere.
+        $this->travel(60)->days();
+        unset($this->idura->signatories[$legacyId]);
+        $this->party($envelope, 'old-viewer@example.com')->update(['idura_signatory_id' => null]);
+        $this->sync();
+        $this->travelBack();
+
+        $this->assertEquals(EnvelopeStatus::Completed, $envelope->fresh()->status);
+    }
+
+    #[Test]
+    public function a_modern_viewer_does_not_make_an_old_envelope_retryable(): void
+    {
+        $this->idura->orderStatus = 'OPEN';
+        $envelope = $this->sentEnvelope([
+            ['name' => 'Underskriver', 'email' => 'modern-signer@example.com'],
+            ['name' => 'Kopi', 'email' => 'modern-viewer@example.com', 'role' => SigningPartyRole::Viewer->value],
+        ]);
+        $this->assertNull($this->party($envelope, 'modern-viewer@example.com')->idura_signatory_id, 'Forudsætning: ny kopimodtager uden Idura-id.');
+        $this->inDailySlot();
+        $signer = $this->party($envelope, 'modern-signer@example.com');
+        $signer->update(['status' => SigningPartyStatus::Signed, 'signed_at' => now()->subMonths(2)]);
+        SigningEnvelope::whereKey($envelope->id)->update(['status' => EnvelopeStatus::Expired->value, 'expires_at' => now()->subMonths(1)]);
+        $calls = $this->idura->orderStatusCalls;
+
+        $this->sync();
+
+        $this->assertSame($calls, $this->idura->orderStatusCalls);
+    }
+
+    #[Test]
+    public function a_failure_fixed_after_the_window_is_picked_up_by_the_daily_retry(): void
+    {
+        // Fx en disk, der fejlede på dag 0 og rettes på dag 16.
+        $old = $this->expiredAllSigned('disk@example.com', now()->subMonths(2));
+        $this->oldBlock($old, ['reason' => 'completion_failed:RuntimeException:abc'], now()->subDays(16));
+        $calls = $this->idura->orderStatusCalls;
+
+        $this->sync();
+        $this->assertSame($calls, $this->idura->orderStatusCalls, 'Uden for vinduet: ikke hver time.');
+
+        $this->inDailySlot();
+        $this->sync();
+
+        $this->assertEquals(EnvelopeStatus::Completed, $old->fresh()->status);
+    }
+
+    #[Test]
+    public function a_final_order_block_is_checked_daily_and_cleared_if_idura_returns_the_order(): void
+    {
+        $lost = $this->expiredAllSigned('lost-daily@example.com', now()->subMonths(2));
+        $this->oldBlock($lost, ['reason' => 'idura_order_cancelled'], now()->subMonths(1));
+        $calls = $this->idura->orderStatusCalls;
+
+        $this->sync();
+        $this->assertSame($calls, $this->idura->orderStatusCalls, 'Ikke hver time.');
+
+        // Idura svarer OPEN igen (fx en fejlaflæsning): den daglige runde
+        // løser blokeringen og fuldfører.
+        $this->inDailySlot();
+        $this->idura->orderStatus = 'OPEN';
+        $this->sync();
+
+        $this->assertEquals(EnvelopeStatus::Completed, $lost->fresh()->status);
+    }
+
+    #[Test]
+    public function a_legacy_viewer_outside_the_current_round_does_not_keep_an_old_envelope_polled(): void
+    {
+        // Afvist kopimodtager i runde 1, kuverten står i runde 2: rapporten
+        // ser kun den aktuelle runde, så udvælgelsen gør det samme.
+        $this->idura->orderStatus = 'OPEN';
+        $envelope = $this->sentEnvelope([
+            ['name' => 'Underskriver', 'email' => 'round-signer@example.com'],
+            ['name' => 'Kopi', 'email' => 'round-viewer@example.com', 'role' => SigningPartyRole::Viewer->value],
+        ]);
+        $this->addLegacyViewer($envelope, 'round-viewer@example.com');
+        $this->party($envelope, 'round-viewer@example.com')->update(['status' => SigningPartyStatus::Rejected]);
+        $this->party($envelope, 'round-signer@example.com')->update(['status' => SigningPartyStatus::Signed, 'signed_at' => now()->subMonths(2)]);
+        SigningEnvelope::whereKey($envelope->id)->update(['status' => EnvelopeStatus::Expired->value, 'expires_at' => now()->subMonths(1), 'current_round' => 2]);
+        $this->inDailySlot();
+        $calls = $this->idura->orderStatusCalls;
+
+        $this->sync();
+
+        $this->assertSame($calls, $this->idura->orderStatusCalls);
+    }
+
+    #[Test]
+    public function the_daily_retry_is_taken_by_the_first_run_from_four_even_if_the_four_oclock_run_was_lost(): void
+    {
+        $old = $this->expiredAllSigned('daily@example.com', now()->subMonths(2));
+        $this->oldBlock($old, ['reason' => 'completion_failed:RuntimeException:abc'], now()->subDays(16));
+        $calls = $this->idura->orderStatusCalls;
+
+        // Næste dag kl. 02: før den daglige time.
+        $this->travelTo(now()->startOfDay()->addDay()->setHour(2));
+        $this->sync();
+        $this->assertSame($calls, $this->idura->orderStatusCalls, 'Før kl. 04: ingen daglig runde.');
+
+        // Kørslen kl. 04 blev tabt; kl. 05 tager den daglige runde.
+        $this->travelTo(now()->setHour(5));
+        $this->idura->orderStatus = 'OPEN';
+        $this->sync();
+        $this->assertEquals(EnvelopeStatus::Completed, $old->fresh()->status);
+    }
+
+    #[Test]
+    public function the_daily_retry_runs_only_once_a_day(): void
+    {
+        // Gammel kopimodtager, der stadig står hos Idura, og en gammel,
+        // allerede rapporteret blokering: den daglige runde ændrer intet.
+        $this->outsideDailySlot();
+        $this->idura->orderStatus = 'OPEN';
+        $envelope = $this->sentEnvelope([
+            ['name' => 'Underskriver', 'email' => 'once-signer@example.com'],
+            ['name' => 'Kopi', 'email' => 'once-viewer@example.com', 'role' => SigningPartyRole::Viewer->value],
+        ]);
+        $legacyId = $this->addLegacyViewer($envelope, 'once-viewer@example.com');
+        $signer = $this->party($envelope, 'once-signer@example.com');
+        $this->idura->markSigned($signer->idura_signatory_id);
+        $signer->update(['status' => SigningPartyStatus::Signed, 'signed_at' => now()->subMonths(2)]);
+        SigningEnvelope::whereKey($envelope->id)->update(['status' => EnvelopeStatus::Expired->value, 'expires_at' => now()->subMonths(1)]);
+        $this->oldBlock($envelope, ['reason' => 'legacy_viewer_signatory:'.$legacyId], now()->subMonths(1));
+        $this->inDailySlot();
+        $calls = $this->idura->orderStatusCalls;
+
+        $this->sync();
+        $this->assertSame($calls + 1, $this->idura->orderStatusCalls, 'Forudsætning: den daglige runde slår kuverten op.');
+        $this->travel(1)->hour();
+        $this->sync();
+
+        $this->assertSame($calls + 1, $this->idura->orderStatusCalls, 'Anden kørsel samme dag: ingen ny daglig runde.');
+        $this->assertSame(1, $envelope->events()->where('event_type', 'envelope.blocked')->count(), 'Ingen ny rapport.');
+    }
+
+    #[Test]
+    public function a_run_that_fails_as_a_whole_gives_the_daily_retry_back(): void
+    {
+        $this->inDailySlot();
+        $key = SyncIduraSignatureStatus::DAILY_RETRY_CACHE_KEY.':'.now()->toDateString();
+        // Forespørgslen fejler samlet (her: events-tabellen mangler).
+        \Illuminate\Support\Facades\Schema::drop('signing_events');
+
+        try {
+            $this->sync();
+            $this->fail('Forventede, at kørslen fejlede.');
+        } catch (\Illuminate\Database\QueryException) {
+            // forventet
+        }
+
+        $this->assertFalse(\Illuminate\Support\Facades\Cache::has($key), 'Næste kørsel skal kunne tage dagens runde.');
+    }
+
+    #[Test]
+    public function a_short_idura_outage_in_the_daily_retry_does_not_bring_old_envelopes_back_to_hourly_polling(): void
+    {
+        $old = $this->expiredAllSigned('outage@example.com', now()->subMonths(3));
+        $this->oldBlock($old, ['reason' => 'completion_failed:RuntimeException:abc'], now()->subMonths(2));
+        // Den daglige runde ramte et 503 og ophævede det næste kørsel.
+        $this->oldBlock($old, ['reason' => 'sync_failed:RuntimeException:http_503'], now()->subHours(2));
+        $old->logEvent(\Fountainhead\SigningRoom\Enums\SigningEventType::EnvelopeUnblocked, metadata: ['reason_prefix' => 'sync_failed:']);
+        $calls = $this->idura->orderStatusCalls;
+
+        $this->sync();
+
+        $this->assertSame($calls, $this->idura->orderStatusCalls, 'Egne sync-fejl er ikke aktivitet: ikke hver time.');
+    }
+
+    private function remind(): void
+    {
+        (new \Fountainhead\SigningRoom\Jobs\SendSigningReminders)->handle();
+    }
+
+    #[Test]
+    public function a_freshly_sent_envelope_is_not_reminded_the_same_day(): void
+    {
+        // Sendt kl. 08:55, påmindelsesjobbet kører kl. 09:00: last_reminder_at
+        // er tom, men parten fik sin mail for fem minutter siden.
+        $envelope = $this->sentEnvelope([['name' => 'Ny', 'email' => 'fresh@example.com']]);
+        SigningEnvelope::whereKey($envelope->id)->update(['reminder_interval' => 7, 'last_reminder_at' => null]);
+
+        $this->remind();
+
+        Notification::assertNotSentTo($this->party($envelope, 'fresh@example.com'), \Fountainhead\SigningRoom\Notifications\SigningReminderNotification::class);
+    }
+
+    #[Test]
+    public function a_signer_is_reminded_once_the_interval_since_the_last_mail_has_passed(): void
+    {
+        $envelope = $this->sentEnvelope([
+            ['name' => 'Gammel', 'email' => 'due@example.com'],
+            ['name' => 'Manuelt mindet', 'email' => 'manual@example.com'],
+        ]);
+        SigningEnvelope::whereKey($envelope->id)->update(['reminder_interval' => 7, 'last_reminder_at' => now()->subDays(30)]);
+        $this->party($envelope, 'due@example.com')->update(['notified_at' => now()->subDays(8)]);
+        // Manuel påmindelse for en time siden: kun notified_at er sat.
+        $this->party($envelope, 'manual@example.com')->update(['notified_at' => now()->subHour()]);
+
+        $this->remind();
+
+        Notification::assertSentToTimes($this->party($envelope, 'due@example.com'), \Fountainhead\SigningRoom\Notifications\SigningReminderNotification::class, 1);
+        Notification::assertNotSentTo($this->party($envelope, 'manual@example.com'), \Fountainhead\SigningRoom\Notifications\SigningReminderNotification::class);
+    }
+
+    #[Test]
+    public function reminding_one_signer_does_not_hold_back_another_who_was_skipped(): void
+    {
+        $this->travelTo(now()->startOfDay()->setHour(9));
+        $envelope = $this->sentEnvelope([
+            ['name' => 'A', 'email' => 'a@example.com'],
+            ['name' => 'B', 'email' => 'b@example.com'],
+        ]);
+        SigningEnvelope::whereKey($envelope->id)->update(['reminder_interval' => 7, 'last_reminder_at' => now()->subDays(30)]);
+        $this->party($envelope, 'a@example.com')->update(['notified_at' => now()->subDays(8)]);
+        // B fik en manuel påmindelse for fire dage siden.
+        $this->party($envelope, 'b@example.com')->update(['notified_at' => now()->subDays(4)]);
+
+        $this->remind();
+        Notification::assertSentToTimes($this->party($envelope, 'a@example.com'), \Fountainhead\SigningRoom\Notifications\SigningReminderNotification::class, 1);
+        Notification::assertNotSentTo($this->party($envelope, 'b@example.com'), \Fountainhead\SigningRoom\Notifications\SigningReminderNotification::class);
+
+        // Tre dage senere er B forfalden, selv om A blev mindet.
+        $this->travel(3)->days();
+        $this->remind();
+
+        Notification::assertSentToTimes($this->party($envelope, 'b@example.com'), \Fountainhead\SigningRoom\Notifications\SigningReminderNotification::class, 1);
+        Notification::assertSentToTimes($this->party($envelope, 'a@example.com'), \Fountainhead\SigningRoom\Notifications\SigningReminderNotification::class, 1);
+    }
+
+    #[Test]
+    public function a_reminder_written_seconds_into_the_last_run_is_due_exactly_one_interval_later(): void
+    {
+        // Sidste mail kl. 09:00:03; jobbet kører igen kl. 09:00:00 efter
+        // præcis intervallet. Interval 1 = hver dag, ikke hver anden.
+        $this->travelTo(now()->startOfDay()->setTime(9, 0, 3));
+        $envelope = $this->sentEnvelope([['name' => 'Dagligt', 'email' => 'daily-r@example.com']]);
+        SigningEnvelope::whereKey($envelope->id)->update(['reminder_interval' => 1, 'last_reminder_at' => now()]);
+        $this->party($envelope, 'daily-r@example.com')->update(['notified_at' => now()]);
+
+        $this->travelTo(now()->addDay()->setTime(9, 0, 0));
+        $this->remind();
+
+        Notification::assertSentToTimes($this->party($envelope, 'daily-r@example.com'), \Fountainhead\SigningRoom\Notifications\SigningReminderNotification::class, 1);
+    }
+
+    #[Test]
+    public function a_run_that_reminds_nobody_does_not_push_the_envelope_interval_back(): void
+    {
+        $envelope = $this->sentEnvelope([['name' => 'Sprunget over', 'email' => 'skipped@example.com']]);
+        SigningEnvelope::whereKey($envelope->id)->update(['reminder_interval' => 7, 'last_reminder_at' => now()->subDays(30)]);
+        // Manuel påmindelse for fire dage siden: springes over i dag.
+        $this->party($envelope, 'skipped@example.com')->update(['notified_at' => now()->subDays(4)]);
+
+        $this->remind();
+        Notification::assertNotSentTo($this->party($envelope, 'skipped@example.com'), \Fountainhead\SigningRoom\Notifications\SigningReminderNotification::class);
+        $this->assertTrue($envelope->fresh()->last_reminder_at->lte(now()->subDays(29)), 'Kuvertens interval er uændret.');
+
+        // Tre dage senere er parten forfalden og mindes.
+        $this->travel(3)->days();
+        $this->remind();
+        $this->travelBack();
+
+        Notification::assertSentToTimes($this->party($envelope, 'skipped@example.com'), \Fountainhead\SigningRoom\Notifications\SigningReminderNotification::class, 1);
+    }
+
+    #[Test]
+    public function a_mail_sent_late_in_the_evening_is_not_reminded_the_next_morning(): void
+    {
+        $this->travelTo(now()->startOfDay()->setTime(23, 58));
+        $envelope = $this->sentEnvelope([['name' => 'Aften', 'email' => 'evening@example.com']]);
+        SigningEnvelope::whereKey($envelope->id)->update(['reminder_interval' => 1, 'last_reminder_at' => null]);
+
+        $this->travelTo(now()->addDay()->setTime(9, 0));
+        $this->remind();
+        Notification::assertNotSentTo($this->party($envelope, 'evening@example.com'), \Fountainhead\SigningRoom\Notifications\SigningReminderNotification::class);
+
+        $this->travelTo(now()->addDay()->setTime(9, 0));
+        $this->remind();
+        Notification::assertSentToTimes($this->party($envelope, 'evening@example.com'), \Fountainhead\SigningRoom\Notifications\SigningReminderNotification::class, 1);
+    }
 }

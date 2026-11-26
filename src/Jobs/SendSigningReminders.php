@@ -37,10 +37,14 @@ class SendSigningReminders implements ShouldQueue
             ->where(function ($q) {
                 $q->whereNull('expires_at')->orWhere('expires_at', '>', now());
             })
-            ->where(function ($q) {
-                $q->whereNull('last_reminder_at')
-                    ->orWhereRaw('last_reminder_at <= NOW() - INTERVAL reminder_interval DAY');
-            })
+            // Grovfilter: kun kuverter med en underskriver, der sidst fik mail
+            // før i dag. Intervallet afgøres pr. part nedenfor (ikke med
+            // MySQL-SQL som NOW() - INTERVAL ... DAY, som SQLite og PostgreSQL
+            // ikke forstår).
+            ->whereHas('parties', fn ($p) => $p
+                ->where('role', 'signer')
+                ->whereNotNull('notified_at')
+                ->where('notified_at', '<', now()->startOfDay()))
             ->get();
 
         foreach ($envelopes as $envelope) {
@@ -59,9 +63,20 @@ class SendSigningReminders implements ShouldQueue
                 ->whereNotNull('notified_at')
                 ->get();
 
+            $reminded = false;
+
             foreach ($unsignedParties as $party) {
                 $maxReminders = config('signing-room.defaults.max_reminders', 3);
                 if ($party->reminder_count >= $maxReminders) {
+                    continue;
+                }
+
+                // Pr. part: først når der er gået reminder_interval døgn siden
+                // partens seneste mail, med en times tolerance, så jobbet kl. 09
+                // ikke rammer et par sekunder for tidligt. Dækker
+                // en nyligt sendt kuvert, en manuel påmindelse og en runde-mail
+                // midt i intervallet, uden at holde andre parter tilbage.
+                if (! self::isDue($party->notified_at, (int) $envelope->reminder_interval)) {
                     continue;
                 }
 
@@ -69,9 +84,19 @@ class SendSigningReminders implements ShouldQueue
                 $party->increment('reminder_count');
                 $party->update(['notified_at' => now()]);
                 $envelope->logEvent(SigningEventType::PartyReminded, $party);
+                $reminded = true;
             }
 
-            $envelope->update(['last_reminder_at' => now()]);
+            // Kun til orientering: intervallet styres pr. part (notified_at).
+            if ($reminded) {
+                $envelope->update(['last_reminder_at' => now()]);
+            }
         }
+    }
+
+    private static function isDue(\DateTimeInterface $notifiedAt, int $interval): bool
+    {
+        return \Illuminate\Support\Carbon::instance($notifiedAt)
+            ->lte(now()->subDays(max(1, $interval))->addHour());
     }
 }

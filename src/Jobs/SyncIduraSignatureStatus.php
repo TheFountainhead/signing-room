@@ -3,9 +3,11 @@
 namespace Fountainhead\SigningRoom\Jobs;
 
 use Fountainhead\SigningRoom\Enums\EnvelopeStatus;
+use Fountainhead\SigningRoom\Enums\SigningEventType;
 use Fountainhead\SigningRoom\Exceptions\EnvelopeBlockedByViewerException;
 use Fountainhead\SigningRoom\Exceptions\EnvelopeOrderNotOpenException;
 use Fountainhead\SigningRoom\Models\SigningEnvelope;
+use Fountainhead\SigningRoom\Models\SigningEvent;
 use Fountainhead\SigningRoom\Services\IduraSignatureService;
 use Fountainhead\SigningRoom\Services\SigningRoomService;
 use Illuminate\Bus\Queueable;
@@ -13,6 +15,7 @@ use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Schema;
 
 /**
@@ -31,6 +34,36 @@ class SyncIduraSignatureStatus implements ShouldQueue, ShouldBeUnique
 
     private const RECORD_BACKFILL_HOURS = 24;
 
+    /**
+     * Hvor længe en udløbet, helt underskrevet kuvert genforsøges hver time
+     * efter sin seneste aktivitet: en registreret underskrift (signed_at er
+     * registreringstidspunktet, ikke nødvendigvis underskriftens) eller en
+     * blokering/ophævelse. En ophævet blokering starter altså vinduet forfra.
+     * Undtaget: sync_failed-blokeringer og deres ophævelse (isOwnSyncFailure).
+     */
+    private const EXPIRED_RETRY_DAYS = 14;
+
+    /**
+     * Efter vinduet genforsøges en udløbet, helt underskrevet kuvert én gang
+     * i døgnet, hvis den har en åben blokering, der ikke er endelig, eller en
+     * gammel kopimodtager i den aktuelle runde. En forbigående fejl, der rettes
+     * efter vinduet (fx en disk), samles altså stadig op, uden at kuverten
+     * polles hver time uden ende. Kørsler fra kl. 04 tager runden, indtil en
+     * af dem er gennemført (markør i cachen); en tabt, fejlet eller dræbt
+     * kørsel kl. 04 overtages altså kl. 05.
+     */
+    private const DAILY_RETRY_HOUR = 4;
+
+    public const DAILY_RETRY_CACHE_KEY = 'signing-room:sync:daily-expired-retry';
+
+    /** Afgjort én gang pr. kørsel i handle(), så en kørsel over et timeskift er konsistent. */
+    private bool $dailyRetry = false;
+
+    private string $dailyRetryKey = '';
+
+    /** Idura-ordren er rapporteret udløbet eller annulleret: kun i den daglige runde. */
+    private const FINAL_ORDER_BLOCKS = ['idura_order_expired', 'idura_order_cancelled'];
+
     public function __construct()
     {
         // Standardkøen, medmindre hosten vælger en anden: en egen kø, som
@@ -45,17 +78,57 @@ class SyncIduraSignatureStatus implements ShouldQueue, ShouldBeUnique
             return;
         }
 
+        $this->dailyRetry = $this->isDailyRetryDue();
+
+        $this->syncAll($idura, $service);
+
+        // Først når kørslen er færdig: en kørsel, der fejler eller bliver
+        // dræbt (fx worker-timeout), efterlader ingen markør, så næste kørsel
+        // tager runden. ShouldBeUnique (uniqueFor 3300 s) forhindrer samtidige
+        // kørsler, så længe en kørsel varer under 55 minutter.
+        if ($this->dailyRetry) {
+            $this->markDailyRetryDone();
+        }
+    }
+
+    private function syncAll(IduraSignatureService $idura, SigningRoomService $service): void
+    {
         $envelopes = SigningEnvelope::query()
             ->where(fn ($q) => $q
                 ->whereIn('status', [EnvelopeStatus::Sent, EnvelopeStatus::PartiallySigned])
                 // Udløbet lokalt, men alle underskrivere har underskrevet og
-                // kuverten er ikke fuldført: fuldførelsen prøves igen, så længe
-                // Idura-ordren kan lukkes (ellers rapporteres den tabte PDF).
+                // kuverten er ikke fuldført: fuldførelsen prøves igen.
+                //
+                // Afgrænset, så historik ikke genbehandles ved deploy: hver time
+                // kun ved aktivitet inden for EXPIRED_RETRY_DAYS; én gang i
+                // døgnet også ved en blokering eller en gammel kopimodtager i
+                // den aktuelle runde. isRetryableExpired() afgør præcist.
+                // Det, der springes over, er kun historik uden blokering, som
+                // sync før #20 heller aldrig rørte (den tog kun Sent/
+                // PartiallySigned). Bevidst: ingen sene fuldførelses-mails og
+                // ingen rapport pr. historisk kuvert ved deploy. Undtagelse:
+                // en historisk kuvert med gammel kopimodtager får én rapport
+                // (kopimodtager, eller tabt PDF, hvis Idura-ordren er udløbet).
                 ->orWhere(fn ($q) => $q
                     ->where('status', EnvelopeStatus::Expired)
                     ->whereNull('completed_at')
                     ->whereHas('parties', fn ($p) => $p->where('role', 'signer'))
-                    ->whereDoesntHave('parties', fn ($p) => $p->where('role', 'signer')->where('status', '!=', 'signed'))))
+                    ->whereDoesntHave('parties', fn ($p) => $p->where('role', 'signer')->where('status', '!=', 'signed'))
+                    ->where(fn ($retry) => $retry
+                        ->whereHas('parties', fn ($p) => $p->where('role', 'signer')->where('signed_at', '>=', now()->subDays(self::EXPIRED_RETRY_DAYS)))
+                        ->orWhereHas('events', fn ($e) => $e
+                            ->whereIn('event_type', [SigningEventType::EnvelopeBlocked->value, SigningEventType::EnvelopeUnblocked->value])
+                            ->where('created_at', '>=', now()->subDays(self::EXPIRED_RETRY_DAYS)))
+                        ->when($this->dailyRetry, fn ($daily) => $daily
+                            ->orWhereHas('events', fn ($e) => $e->where('event_type', SigningEventType::EnvelopeBlocked->value))
+                            // Også før blokeringen er rapporteret: kuverter, der
+                            // udløb lokalt før rapporteringen fandtes, skal nå
+                            // syncEnvelope() for at få rapporten.
+                            ->orWhereHas('parties', fn ($p) => $p
+                                ->where('role', 'viewer')
+                                ->whereNotNull('idura_signatory_id')
+                                ->where('status', '!=', 'signed')
+                                ->whereColumn('signing_parties.signing_round', 'signing_envelopes.current_round'))))))
             ->whereNotNull('idura_signature_order_id')
             ->tap(fn ($query) => SigningEnvelope::onlyProcessable($query))
             ->get();
@@ -63,6 +136,10 @@ class SyncIduraSignatureStatus implements ShouldQueue, ShouldBeUnique
         foreach ($envelopes as $envelope) {
             // Én kuvert der fejler, må ikke stoppe synkroniseringen af resten.
             try {
+                if ($envelope->status === EnvelopeStatus::Expired && ! $this->isRetryableExpired($envelope)) {
+                    continue;
+                }
+
                 $inspectedSignatories = $this->syncEnvelope($envelope, $idura, $service);
 
                 // Synkroniseringen lykkedes: en tidligere sync-fejl er løst.
@@ -207,6 +284,85 @@ class SyncIduraSignatureStatus implements ShouldQueue, ShouldBeUnique
         $this->reportLegacyViewerBlockOnce($envelope);
 
         return true;
+    }
+
+    /**
+     * En udløbet, helt underskreven kuvert genforsøges ikke, hvis Idura-ordren
+     * er rapporteret udløbet eller annulleret (FINAL_ORDER_BLOCKS). Ellers
+     * hver time ved aktivitet inden for EXPIRED_RETRY_DAYS, og derefter én
+     * gang i døgnet (se DAILY_RETRY_HOUR), så længe den har en åben blokering
+     * eller en gammel kopimodtager i den aktuelle runde (samme afgrænsning som
+     * rapporten, legacyBlockingViewers()).
+     */
+    private function isRetryableExpired(SigningEnvelope $envelope): bool
+    {
+        $reasons = $envelope->openBlockReasons();
+
+        // Rapporteret udløbet/annulleret hos Idura: ikke hver time, men med i
+        // den daglige runde, så blokeringen kan løses og kuverten fuldføres,
+        // hvis Idura senere svarer OPEN eller CLOSED.
+        if ($reasons->intersect(self::FINAL_ORDER_BLOCKS)->isNotEmpty()) {
+            return $this->dailyRetry;
+        }
+
+        $since = now()->subDays(self::EXPIRED_RETRY_DAYS);
+
+        $recent = $envelope->parties()->where('role', 'signer')->where('signed_at', '>=', $since)->exists()
+            || $envelope->events()
+                ->whereIn('event_type', [SigningEventType::EnvelopeBlocked->value, SigningEventType::EnvelopeUnblocked->value])
+                ->where('created_at', '>=', $since)
+                ->get(['event_type', 'metadata'])
+                ->contains(fn (SigningEvent $event) => ! self::isOwnSyncFailure($event));
+
+        if ($recent) {
+            return true;
+        }
+
+        return $this->dailyRetry
+            && ($reasons->isNotEmpty() || $envelope->legacyBlockingViewers()->exists());
+    }
+
+    /**
+     * En sync_failed-blokering eller dens ophævelse registrerer kun, at vores
+     * eget kald fejlede eller lykkedes igen, ikke fremdrift på kuverten. Den
+     * tæller ikke som aktivitet; ellers ville et kort Idura-nedbrud i den
+     * daglige runde sende gamle kuverter tilbage til polling hver time.
+     */
+    private static function isOwnSyncFailure(SigningEvent $event): bool
+    {
+        $metadata = $event->metadata ?? [];
+
+        return $event->event_type === SigningEventType::EnvelopeBlocked
+            ? str_starts_with((string) ($metadata['reason'] ?? ''), 'sync_failed:')
+            : ($metadata['reason_prefix'] ?? null) === 'sync_failed:';
+    }
+
+    /**
+     * Den daglige runde mangler i dag, og klokken er DAILY_RETRY_HOUR eller
+     * senere. Uden cache springes den over (næste kørsel prøver igen).
+     */
+    private function isDailyRetryDue(): bool
+    {
+        if (now()->hour < self::DAILY_RETRY_HOUR) {
+            return false;
+        }
+
+        $this->dailyRetryKey = self::DAILY_RETRY_CACHE_KEY.':'.now()->toDateString();
+
+        try {
+            return ! Cache::has($this->dailyRetryKey);
+        } catch (\Throwable) {
+            return false;
+        }
+    }
+
+    private function markDailyRetryDone(): void
+    {
+        try {
+            Cache::put($this->dailyRetryKey, true, now()->addDay());
+        } catch (\Throwable) {
+            // Uden cache: næste kørsel tager runden igen (højst en gang i timen).
+        }
     }
 
     /**
