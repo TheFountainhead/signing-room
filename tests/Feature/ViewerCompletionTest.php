@@ -2076,8 +2076,20 @@ class ViewerCompletionTest extends TestCase
         $this->assertTrue($sent->expires_at->gt(now()->addDays(2)));
     }
 
+    /** Uden for den daglige genforsøgstime (kl. 04), så testen ikke afhænger af uret. */
+    private function outsideDailySlot(): void
+    {
+        $this->travelTo(now()->startOfDay()->setHour(10));
+    }
+
+    private function inDailySlot(): void
+    {
+        $this->travelTo(now()->startOfDay()->addDay()->setHour(4)->setMinute(0));
+    }
+
     private function expiredAllSigned(string $email, \DateTimeInterface $signedAt): SigningEnvelope
     {
+        $this->outsideDailySlot();
         $this->idura->orderStatus = 'OPEN';
         $envelope = $this->sentEnvelope([['name' => $email, 'email' => $email]]);
         $party = $this->party($envelope, $email);
@@ -2133,6 +2145,9 @@ class ViewerCompletionTest extends TestCase
             ->forceFill(['created_at' => now()->subDays(19)])->save();
         $calls = $this->idura->orderStatusCalls;
 
+        $this->sync();
+        // Heller ikke i den daglige time: blokeringen er løst.
+        $this->inDailySlot();
         $this->sync();
 
         $this->assertSame($calls, $this->idura->orderStatusCalls);
@@ -2217,11 +2232,16 @@ class ViewerCompletionTest extends TestCase
     }
 
     #[Test]
-    public function an_old_legacy_viewer_block_is_retried_however_old_it_is(): void
+    public function an_old_legacy_viewer_block_is_retried_once_a_day_however_old_it_is(): void
     {
         $old = $this->expiredAllSigned('legacy-old@example.com', now()->subMonths(3));
         $this->oldBlock($old, ['reason' => 'legacy_viewer_signatory:sig-x'], now()->subMonths(2));
+        $calls = $this->idura->orderStatusCalls;
 
+        $this->sync();
+        $this->assertSame($calls, $this->idura->orderStatusCalls, 'Uden for den daglige time: ikke hver time.');
+
+        $this->inDailySlot();
         $this->sync();
 
         $this->assertEquals(EnvelopeStatus::Completed, $old->fresh()->status);
@@ -2295,7 +2315,13 @@ class ViewerCompletionTest extends TestCase
         $signer->update(['status' => SigningPartyStatus::Signed, 'signed_at' => now()->subMonths(2)]);
         SigningEnvelope::whereKey($envelope->id)->update(['status' => EnvelopeStatus::Expired->value, 'expires_at' => now()->subMonths(1)]);
 
+        $this->outsideDailySlot();
         $this->sync();
+        Exceptions::assertNothingReported();
+
+        $this->inDailySlot();
+        $this->sync();
+        $this->travel(1)->day();
         $this->sync();
 
         Exceptions::assertReportedCount(1);
@@ -2321,9 +2347,62 @@ class ViewerCompletionTest extends TestCase
             ['name' => 'Kopi', 'email' => 'modern-viewer@example.com', 'role' => SigningPartyRole::Viewer->value],
         ]);
         $this->assertNull($this->party($envelope, 'modern-viewer@example.com')->idura_signatory_id, 'Forudsætning: ny kopimodtager uden Idura-id.');
+        $this->inDailySlot();
         $signer = $this->party($envelope, 'modern-signer@example.com');
         $signer->update(['status' => SigningPartyStatus::Signed, 'signed_at' => now()->subMonths(2)]);
         SigningEnvelope::whereKey($envelope->id)->update(['status' => EnvelopeStatus::Expired->value, 'expires_at' => now()->subMonths(1)]);
+        $calls = $this->idura->orderStatusCalls;
+
+        $this->sync();
+
+        $this->assertSame($calls, $this->idura->orderStatusCalls);
+    }
+
+    #[Test]
+    public function a_failure_fixed_after_the_window_is_picked_up_by_the_daily_retry(): void
+    {
+        // Fx en disk, der fejlede på dag 0 og rettes på dag 16.
+        $old = $this->expiredAllSigned('disk@example.com', now()->subMonths(2));
+        $this->oldBlock($old, ['reason' => 'completion_failed:RuntimeException:abc'], now()->subDays(16));
+        $calls = $this->idura->orderStatusCalls;
+
+        $this->sync();
+        $this->assertSame($calls, $this->idura->orderStatusCalls, 'Uden for vinduet: ikke hver time.');
+
+        $this->inDailySlot();
+        $this->sync();
+
+        $this->assertEquals(EnvelopeStatus::Completed, $old->fresh()->status);
+    }
+
+    #[Test]
+    public function a_final_order_block_is_not_retried_in_the_daily_slot_either(): void
+    {
+        $lost = $this->expiredAllSigned('lost-daily@example.com', now()->subMonths(2));
+        $this->oldBlock($lost, ['reason' => 'idura_order_expired'], now()->subMonths(1));
+        $this->inDailySlot();
+        $calls = $this->idura->orderStatusCalls;
+
+        $this->sync();
+
+        $this->assertSame($calls, $this->idura->orderStatusCalls);
+    }
+
+    #[Test]
+    public function a_legacy_viewer_outside_the_current_round_does_not_keep_an_old_envelope_polled(): void
+    {
+        // Afvist kopimodtager i runde 1, kuverten står i runde 2: rapporten
+        // ser kun den aktuelle runde, så udvælgelsen gør det samme.
+        $this->idura->orderStatus = 'OPEN';
+        $envelope = $this->sentEnvelope([
+            ['name' => 'Underskriver', 'email' => 'round-signer@example.com'],
+            ['name' => 'Kopi', 'email' => 'round-viewer@example.com', 'role' => SigningPartyRole::Viewer->value],
+        ]);
+        $this->addLegacyViewer($envelope, 'round-viewer@example.com');
+        $this->party($envelope, 'round-viewer@example.com')->update(['status' => SigningPartyStatus::Rejected]);
+        $this->party($envelope, 'round-signer@example.com')->update(['status' => SigningPartyStatus::Signed, 'signed_at' => now()->subMonths(2)]);
+        SigningEnvelope::whereKey($envelope->id)->update(['status' => EnvelopeStatus::Expired->value, 'expires_at' => now()->subMonths(1), 'current_round' => 2]);
+        $this->inDailySlot();
         $calls = $this->idura->orderStatusCalls;
 
         $this->sync();
