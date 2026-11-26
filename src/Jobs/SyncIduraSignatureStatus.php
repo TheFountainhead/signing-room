@@ -46,8 +46,9 @@ class SyncIduraSignatureStatus implements ShouldQueue, ShouldBeUnique
 
     /**
      * Gammel kopimodtager hos Idura: kræver en manuel handling, der kan tage
-     * tid. Genforsøges uden tidsgrænse, så længe blokeringen er åben. Findes
-     * kun i kuverter sendt før 25/11-2026, så mængden er afgrænset.
+     * tid. Genforsøges uden tidsgrænse, så længe blokeringen er åben eller
+     * kopimodtageren stadig har et Idura-id. Findes kun i kuverter sendt før
+     * 25/11-2026, så mængden er afgrænset.
      */
     private const MANUAL_FIX_BLOCK_PREFIX = 'legacy_viewer_signatory';
 
@@ -72,7 +73,7 @@ class SyncIduraSignatureStatus implements ShouldQueue, ShouldBeUnique
                 // kuverten er ikke fuldført: fuldførelsen prøves igen.
                 //
                 // Afgrænset, så historik ikke genbehandles ved deploy: kun ved
-                // aktivitet inden for EXPIRED_RETRY_DAYS eller en åben gammel
+                // aktivitet inden for EXPIRED_RETRY_DAYS eller en gammel
                 // kopimodtager (se isRetryableExpired(), som afgør præcist).
                 // Kuverter, der bliver helt underskrevne og udløbne under denne
                 // kode, har aktivitet i vinduet. Det, der springes over, er kun
@@ -89,7 +90,11 @@ class SyncIduraSignatureStatus implements ShouldQueue, ShouldBeUnique
                             ->where('created_at', '>=', now()->subDays(self::EXPIRED_RETRY_DAYS)))
                         ->orWhereHas('events', fn ($e) => $e
                             ->where('event_type', SigningEventType::EnvelopeBlocked->value)
-                            ->where('metadata->reason', 'like', self::MANUAL_FIX_BLOCK_PREFIX.'%')))))
+                            ->where('metadata->reason', 'like', self::MANUAL_FIX_BLOCK_PREFIX.'%'))
+                        // Også før blokeringen er rapporteret: kuverter, der
+                        // udløb lokalt før rapporteringen fandtes, skal nå
+                        // syncEnvelope() én gang for at få rapporten.
+                        ->orWhereHas('parties', fn ($p) => self::unsignedLegacyViewers($p)))))
             ->whereNotNull('idura_signature_order_id')
             ->tap(fn ($query) => SigningEnvelope::onlyProcessable($query))
             ->get();
@@ -250,8 +255,8 @@ class SyncIduraSignatureStatus implements ShouldQueue, ShouldBeUnique
     /**
      * En udløbet, helt underskreven kuvert genforsøges ikke, hvis Idura-ordren
      * er rapporteret udløbet eller annulleret (FINAL_ORDER_BLOCKS). Ellers
-     * genforsøges den, hvis en gammel kopimodtager blokerer (operatøren kan
-     * fjerne den hos Idura når som helst), eller hvis der har været aktivitet
+     * genforsøges den, hvis en gammel kopimodtager blokerer eller stadig har et
+     * Idura-id (operatøren kan fjerne den hos Idura når som helst), eller hvis der har været aktivitet
      * inden for EXPIRED_RETRY_DAYS. Andre blokeringer (forbigående fejl, en
      * ordre Idura ikke kendte eller en uventet ordrestatus) genforsøges altså
      * i EXPIRED_RETRY_DAYS efter de blev rapporteret, og står derefter åbne
@@ -265,7 +270,8 @@ class SyncIduraSignatureStatus implements ShouldQueue, ShouldBeUnique
             return false;
         }
 
-        if ($reasons->contains(fn (string $reason) => str_starts_with($reason, self::MANUAL_FIX_BLOCK_PREFIX))) {
+        if ($reasons->contains(fn (string $reason) => str_starts_with($reason, self::MANUAL_FIX_BLOCK_PREFIX))
+            || self::unsignedLegacyViewers($envelope->parties())->exists()) {
             return true;
         }
 
@@ -276,6 +282,21 @@ class SyncIduraSignatureStatus implements ShouldQueue, ShouldBeUnique
                 ->whereIn('event_type', [SigningEventType::EnvelopeBlocked->value, SigningEventType::EnvelopeUnblocked->value])
                 ->where('created_at', '>=', $since)
                 ->exists();
+    }
+
+    /**
+     * Kopimodtagere, der stadig står som SIGNER hos Idura (idura_signatory_id
+     * sat, ikke underskrevet), i alle runder. Operatørens rettelse sætter
+     * idura_signatory_id = NULL, så kriteriet lukker sig selv.
+     *
+     * @template T of \Illuminate\Database\Eloquent\Builder|\Illuminate\Database\Eloquent\Relations\HasMany
+     *
+     * @param  T  $parties
+     * @return T
+     */
+    private static function unsignedLegacyViewers($parties)
+    {
+        return $parties->where('role', 'viewer')->whereNotNull('idura_signatory_id')->where('status', '!=', 'signed');
     }
 
     /**

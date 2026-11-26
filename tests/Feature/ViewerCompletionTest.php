@@ -2155,7 +2155,9 @@ class ViewerCompletionTest extends TestCase
     public function an_old_envelope_whose_order_idura_did_not_know_keeps_being_polled(): void
     {
         // idura_order_missing kan være forbigående: ordren dukker op igen, og
-        // så skal kuverten fuldføres, også efter EXPIRED_RETRY_DAYS.
+        // så skal kuverten fuldføres, selv om underskriften er gammel. Selve
+        // blokeringen holder kuverten med i EXPIRED_RETRY_DAYS (se
+        // a_temporary_block_keeps_an_old_envelope_retried_...).
         $old = $this->expiredAllSigned('missing@example.com', now()->subMonths(2));
         $old->logEvent(\Fountainhead\SigningRoom\Enums\SigningEventType::EnvelopeBlocked, metadata: ['reason' => 'idura_order_missing']);
 
@@ -2269,6 +2271,59 @@ class ViewerCompletionTest extends TestCase
         $this->oldBlock($old, ['reason' => 'legacy_viewer_signatory:sig-x'], now()->subMonths(2));
         $old->logEvent(\Fountainhead\SigningRoom\Enums\SigningEventType::EnvelopeUnblocked, metadata: ['reason_prefix' => 'legacy_viewer_signatory'])
             ->forceFill(['created_at' => now()->subMonths(2)->addDay()])->save();
+        $calls = $this->idura->orderStatusCalls;
+
+        $this->sync();
+
+        $this->assertSame($calls, $this->idura->orderStatusCalls);
+    }
+
+    #[Test]
+    public function an_old_envelope_that_expired_before_the_legacy_report_existed_is_reported_and_then_completed(): void
+    {
+        // Udløbet lokalt før #20: ingen blokering, ingen aktivitet i vinduet,
+        // men en kopimodtager står stadig som SIGNER hos Idura.
+        Exceptions::fake();
+        $this->idura->orderStatus = 'OPEN';
+        $envelope = $this->sentEnvelope([
+            ['name' => 'Underskriver', 'email' => 'old-signer@example.com'],
+            ['name' => 'Kopi', 'email' => 'old-viewer@example.com', 'role' => SigningPartyRole::Viewer->value],
+        ]);
+        $legacyId = $this->addLegacyViewer($envelope, 'old-viewer@example.com');
+        $signer = $this->party($envelope, 'old-signer@example.com');
+        $this->idura->markSigned($signer->idura_signatory_id);
+        $signer->update(['status' => SigningPartyStatus::Signed, 'signed_at' => now()->subMonths(2)]);
+        SigningEnvelope::whereKey($envelope->id)->update(['status' => EnvelopeStatus::Expired->value, 'expires_at' => now()->subMonths(1)]);
+
+        $this->sync();
+        $this->sync();
+
+        Exceptions::assertReportedCount(1);
+        Exceptions::assertReported(fn (\Fountainhead\SigningRoom\Exceptions\EnvelopeBlockedByViewerException $e) => str_contains($e->getMessage(), "slet viewer-signatory {$legacyId} hos Idura"));
+        $this->assertEquals(EnvelopeStatus::Expired, $envelope->fresh()->status);
+
+        // Operatøren retter det måneder senere.
+        $this->travel(60)->days();
+        unset($this->idura->signatories[$legacyId]);
+        $this->party($envelope, 'old-viewer@example.com')->update(['idura_signatory_id' => null]);
+        $this->sync();
+        $this->travelBack();
+
+        $this->assertEquals(EnvelopeStatus::Completed, $envelope->fresh()->status);
+    }
+
+    #[Test]
+    public function a_modern_viewer_does_not_make_an_old_envelope_retryable(): void
+    {
+        $this->idura->orderStatus = 'OPEN';
+        $envelope = $this->sentEnvelope([
+            ['name' => 'Underskriver', 'email' => 'modern-signer@example.com'],
+            ['name' => 'Kopi', 'email' => 'modern-viewer@example.com', 'role' => SigningPartyRole::Viewer->value],
+        ]);
+        $this->assertNull($this->party($envelope, 'modern-viewer@example.com')->idura_signatory_id, 'Forudsætning: ny kopimodtager uden Idura-id.');
+        $signer = $this->party($envelope, 'modern-signer@example.com');
+        $signer->update(['status' => SigningPartyStatus::Signed, 'signed_at' => now()->subMonths(2)]);
+        SigningEnvelope::whereKey($envelope->id)->update(['status' => EnvelopeStatus::Expired->value, 'expires_at' => now()->subMonths(1)]);
         $calls = $this->idura->orderStatusCalls;
 
         $this->sync();
