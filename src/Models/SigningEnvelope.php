@@ -207,6 +207,17 @@ class SigningEnvelope extends Model
         );
     }
 
+    /**
+     * Begræns en forespørgsel til kuverter, de planlagte jobs må røre
+     * (signing-room.process_envelopes_created_since).
+     */
+    public static function onlyProcessable(\Illuminate\Database\Eloquent\Builder $query): \Illuminate\Database\Eloquent\Builder
+    {
+        $since = config('signing-room.process_envelopes_created_since');
+
+        return $since ? $query->where('created_at', '>=', \Illuminate\Support\Carbon::parse($since)->startOfDay()) : $query;
+    }
+
     public function getRouteKeyName(): string
     {
         return 'uuid';

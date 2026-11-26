@@ -3,8 +3,8 @@
 namespace Fountainhead\SigningRoom\Jobs;
 
 use Fountainhead\SigningRoom\Enums\EnvelopeStatus;
-use Fountainhead\SigningRoom\Enums\SigningEventType;
 use Fountainhead\SigningRoom\Models\SigningEnvelope;
+use Fountainhead\SigningRoom\Services\SigningRoomService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -23,7 +23,7 @@ class ExpireSigningEnvelopes implements ShouldQueue
         $this->onQueue(config('signing-room.queue'));
     }
 
-    public function handle(): void
+    public function handle(SigningRoomService $service): void
     {
         if (! Schema::hasTable('signing_envelopes')) {
             return;
@@ -36,9 +36,10 @@ class ExpireSigningEnvelopes implements ShouldQueue
                 EnvelopeStatus::Expired,
             ])
             ->where('expires_at', '<', now())
-            ->each(function (SigningEnvelope $envelope) {
-                $envelope->update(['status' => EnvelopeStatus::Expired]);
-                $envelope->logEvent(SigningEventType::EnvelopeExpired);
+            ->tap(fn ($query) => SigningEnvelope::onlyProcessable($query))
+            // Ingen returværdi: each() stopper, hvis callbacken returnerer false.
+            ->each(function (SigningEnvelope $envelope) use ($service): void {
+                $service->expireEnvelope($envelope);
             });
     }
 }

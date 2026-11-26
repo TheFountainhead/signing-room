@@ -39,6 +39,7 @@ class SyncIduraSignatureStatus implements ShouldQueue
         $envelopes = SigningEnvelope::query()
             ->whereIn('status', [EnvelopeStatus::Sent, EnvelopeStatus::PartiallySigned])
             ->whereNotNull('idura_signature_order_id')
+            ->tap(fn ($query) => SigningEnvelope::onlyProcessable($query))
             ->get();
 
         foreach ($envelopes as $envelope) {
@@ -46,7 +47,9 @@ class SyncIduraSignatureStatus implements ShouldQueue
             try {
                 $this->syncEnvelope($envelope, $idura, $service);
             } catch (\Throwable $e) {
-                report($e);
+                // Fx et Idura-nedbrud eller forkerte credentials: én rapport pr.
+                // kuvert og fejltype, ikke én i timen.
+                $envelope->reportBlockedOnce('sync_failed:'.substr(SigningRoomService::completionFailureReason($e), strlen('completion_failed:')), $e);
             }
         }
     }
@@ -69,24 +72,10 @@ class SyncIduraSignatureStatus implements ShouldQueue
         // annulleret ordre må intet rykkes, fuldføres eller mailes. Men
         // underskrifter givet før udløb/annullering registreres.
         if ($order['status'] === 'EXPIRED') {
-            if ($envelope->status !== EnvelopeStatus::Expired) {
-                $envelope->update(['status' => EnvelopeStatus::Expired]);
-            }
-
+            // Først underskrifterne fra før udløb, så expireEnvelope ser, om
+            // alle havde underskrevet (og så rapporterer den tabte PDF).
             $this->recordSignaturesOnly($envelope, $order, $service);
-
-            // Alle havde underskrevet, men kuverten blev aldrig fuldført (fx
-            // fordi closeOrder blev ved med at fejle), før Idura lod ordren
-            // udløbe: den signerede PDF kan ikke længere hentes. Det skal ikke
-            // forsvinde stille.
-            $envelope->refresh();
-
-            if (! $envelope->isCompleted() && $envelope->isAllRoundsComplete()) {
-                $envelope->reportBlockedOnce(SigningRoomService::orderNotOpenReason('EXPIRED').':all_signed', new EnvelopeOrderNotOpenException(
-                    "Kuvert {$envelope->id} ({$envelope->uuid}): alle har underskrevet, men Idura-ordren {$envelope->idura_signature_order_id} udløb, før kuverten blev fuldført. "
-                    . 'Den signerede PDF er ikke gemt her. Kontakt Idura om dokumentet, eller send kuverten igen.'
-                ), ['idura_status' => 'EXPIRED']);
-            }
+            $service->expireEnvelope($envelope);
 
             return;
         }
@@ -116,7 +105,9 @@ class SyncIduraSignatureStatus implements ShouldQueue
             if ($iduraSignatory['status'] === 'SIGNED' && $party->status->value !== 'signed') {
                 // Kun et ægte claim tæller: har en webhook netop taget
                 // underskriften, har den også selv forsøgt fuldførelsen.
-                if ($service->handleSigned($party, ['synced_from_polling' => true])) {
+                // Fundet ved polling: webhooken kom aldrig, og underskriften kan
+                // være gammel. Eventet markeres som indhentet.
+                if ($service->handleSigned($party, ['synced_from_polling' => true], backfilled: true)) {
                     $handledSignature = true;
                 }
             }
@@ -191,7 +182,7 @@ class SyncIduraSignatureStatus implements ShouldQueue
                 ->first();
 
             if ($party && $party->status->value !== 'signed') {
-                $service->handleSigned($party, ['synced_from_polling' => true], progress: false);
+                $service->handleSigned($party, ['synced_from_polling' => true], progress: false, backfilled: true);
             }
         }
     }

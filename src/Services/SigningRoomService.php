@@ -118,10 +118,14 @@ class SigningRoomService
         // closeSignatureOrder med "Signature order has open signatory". Det
         // låste kuvert 35 fast i prod (25/11-2026).
         //
-        // Kopimodtageren får sin kopi via EnvelopeCompletedNotification og
-        // portalen, som ikke bruger noget Idura-id. En rigtig Idura-VIEWER
-        // ville kun kunne se dokumentet mens ordren er åben, medmindre der er
-        // evidence validation (CPR), som vi typisk ikke har for en kopimodtager.
+        // Kopimodtageren får besked via EnvelopeCompletedNotification, som ikke
+        // bruger noget Idura-id. Mailen linker til portalens forside (intet
+        // token-link), og portalen viser kun parter, hvis cpr_hash matcher
+        // MitID-login. En kopimodtager får normalt ingen cpr_hash, så hun ser
+        // som udgangspunkt ikke dokumentet i portalen (eksisterende
+        // begrænsning, uændret her). En rigtig Idura-VIEWER ville kun kunne se
+        // dokumentet, mens ordren er åben, medmindre der er evidence
+        // validation (CPR).
         $signatories = $envelope->parties
             ->filter(fn (SigningParty $party) => $this->isSigner($party))
             ->map(fn (SigningParty $party) => [
@@ -175,7 +179,7 @@ class SigningRoomService
      *     uden rundeskift, fuldførelse eller mails. Bruges, når Idura-ordren er
      *     udløbet eller annulleret, men underskriften blev givet før.
      */
-    public function handleSigned(SigningParty $party, ?array $signatureData = null, bool $progress = true): bool
+    public function handleSigned(SigningParty $party, ?array $signatureData = null, bool $progress = true, bool $backfilled = false): bool
     {
         // Claim underskriften atomisk. En gentaget webhook og sync-jobbet kan
         // behandle samme part samtidig; kun den der faktisk flytter rækken til
@@ -188,12 +192,20 @@ class SigningRoomService
         // Frankston-master, dannebrog-v1, signing-room-app; sidstnævnte har kun
         // creating-hooks og global scopes, som stadig gælder). Lyt på
         // PartySignedEvent eller signing_events i stedet.
+        // signature_data skrives i samme betingede update (krypteret via
+        // modellens cast), så en proces, der dør efter claimet, ikke efterlader
+        // en underskrift uden webhookens data.
+        $encryptedSignatureData = (new SigningParty)
+            ->forceFill(['signature_data' => $signatureData])
+            ->getAttributes()['signature_data'] ?? null;
+
         $claimed = SigningParty::query()
             ->whereKey($party->getKey())
             ->where('status', '!=', SigningPartyStatus::Signed->value)
             ->update([
                 'status' => SigningPartyStatus::Signed->value,
                 'signed_at' => now(),
+                'signature_data' => $encryptedSignatureData,
             ]);
 
         if ($claimed === 0) {
@@ -201,9 +213,8 @@ class SigningRoomService
         }
 
         $party->refresh();
-        $party->update(['signature_data' => $signatureData]);
 
-        $this->recordSignature($party);
+        $this->recordSignature($party, $backfilled);
 
         $envelope = $party->envelope;
 
@@ -312,6 +323,46 @@ class SigningRoomService
     }
 
     /**
+     * Markér en kuvert udløbet (Idura-ordren udløb, webhook eller dagligt job).
+     *
+     * En kuvert, der reelt er fuldført (completed_at/signed_document), udløber
+     * ikke; dens status rettes tilbage. Havde alle underskrevet, men blev
+     * kuverten aldrig fuldført, kan den signerede PDF ikke længere hentes: det
+     * rapporteres én gang i stedet for at forsvinde stille.
+     *
+     * Returnerer true hvis kuverten blev sat til Expired nu.
+     */
+    public function expireEnvelope(SigningEnvelope $envelope): bool
+    {
+        $envelope->refresh();
+
+        if ($envelope->isCompleted()) {
+            if ($envelope->status !== EnvelopeStatus::Completed) {
+                SigningEnvelope::query()->whereKey($envelope->getKey())
+                    ->update(['status' => EnvelopeStatus::Completed->value]);
+            }
+
+            return false;
+        }
+
+        if ($envelope->isAllRoundsComplete()) {
+            $envelope->reportBlockedOnce(self::orderNotOpenReason('EXPIRED').':all_signed', new EnvelopeOrderNotOpenException(
+                "Kuvert {$envelope->id} ({$envelope->uuid}): alle har underskrevet, men Idura-ordren {$envelope->idura_signature_order_id} udløb, før kuverten blev fuldført. "
+                . 'Den signerede PDF er ikke gemt her. Kontakt Idura om dokumentet, eller send kuverten igen.'
+            ), ['idura_status' => 'EXPIRED']);
+        }
+
+        if ($envelope->status === EnvelopeStatus::Expired) {
+            return false;
+        }
+
+        $envelope->update(['status' => EnvelopeStatus::Expired]);
+        $envelope->logEvent(SigningEventType::EnvelopeExpired);
+
+        return true;
+    }
+
+    /**
      * Handle a party rejection event from the webhook.
      */
     public function handleRejected(SigningParty $party, ?string $reason = null): void
@@ -355,23 +406,37 @@ class SigningRoomService
             ->get();
 
         foreach ($parties as $index => $party) {
+            // Claim parten atomisk, før mailen sendes: sync og en webhook kan
+            // nå hertil samtidig, og kun den, der flytter parten fra pending,
+            // sender.
+            $claimed = SigningParty::query()
+                ->whereKey($party->getKey())
+                ->where('status', SigningPartyStatus::Pending->value)
+                ->whereNull('notified_at')
+                ->update([
+                    'status' => SigningPartyStatus::Notified->value,
+                    'notified_at' => now(),
+                ]);
+
+            if ($claimed === 0) {
+                continue;
+            }
+
             // Resend rate limit: 2 requests/sec: stagger queued sends 1s apart.
             // Kan mailen ikke lægges i køen, må det ikke stoppe de andre;
-            // parten forbliver pending uden notified_at, og sync prøver igen.
+            // claimet rulles tilbage, så sync prøver igen.
             try {
                 $party->notify(
                     (new DocumentReadyNotification($envelope, $party))->delay($index),
                 );
             } catch (\Throwable $e) {
+                SigningParty::query()
+                    ->whereKey($party->getKey())
+                    ->update(['status' => SigningPartyStatus::Pending->value, 'notified_at' => null]);
                 report($e);
 
                 continue;
             }
-
-            $party->update([
-                'status' => SigningPartyStatus::Notified,
-                'notified_at' => now(),
-            ]);
 
             $envelope->logEvent(SigningEventType::PartyNotified, $party);
         }

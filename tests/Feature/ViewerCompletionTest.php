@@ -1362,4 +1362,144 @@ class ViewerCompletionTest extends TestCase
         Exceptions::assertReported(fn (\Fountainhead\SigningRoom\Exceptions\SignedDocumentUnavailableException $e) => str_starts_with($e->getMessage(), 'KRITISK:'));
         Notification::assertNotSentTo($this->party($envelope, 'a@example.com'), EnvelopeCompletedNotification::class);
     }
+
+    #[Test]
+    public function the_expired_webhook_reports_an_envelope_that_everyone_signed_but_never_completed(): void
+    {
+        Exceptions::fake();
+        config(['signing-room.idura.webhook_secret' => null]);
+
+        $envelope = $this->sentEnvelope([['name' => 'A', 'email' => 'a@example.com']]);
+        $this->idura->failNextCloses = 99;
+        $this->sign($this->party($envelope, 'a@example.com'));
+
+        $this->postJson(route('signing-room.webhook'), [
+            'event' => 'SIGNATURE_ORDER_EXPIRED',
+            'signatureOrderId' => $envelope->idura_signature_order_id,
+        ])->assertOk();
+
+        $this->assertEquals(EnvelopeStatus::Expired, $envelope->fresh()->status);
+        Exceptions::assertReported(fn (\Fountainhead\SigningRoom\Exceptions\EnvelopeOrderNotOpenException $e) => str_contains($e->getMessage(), 'udløb, før kuverten blev fuldført'));
+    }
+
+    #[Test]
+    public function the_daily_expiry_job_does_not_expire_a_completed_envelope_and_reports_a_lost_one(): void
+    {
+        Exceptions::fake();
+
+        $done = $this->sentEnvelope([['name' => 'A', 'email' => 'a@example.com']]);
+        $this->sign($this->party($done, 'a@example.com'));
+        // Fuldført, men status overskrevet; udløbsdatoen er passeret.
+        SigningEnvelope::whereKey($done->id)->update(['status' => EnvelopeStatus::PartiallySigned->value, 'expires_at' => now()->subDay()]);
+
+        // FakeIdura har én ordre; den første kuvert lukkede den.
+        $this->idura->orderStatus = 'OPEN';
+        $lost = $this->sentEnvelope([['name' => 'B', 'email' => 'b@example.com']]);
+        $this->idura->failNextCloses = 99;
+        $this->sign($this->party($lost, 'b@example.com'));
+        SigningEnvelope::whereKey($lost->id)->update(['expires_at' => now()->subDay()]);
+
+        $this->app->call([new \Fountainhead\SigningRoom\Jobs\ExpireSigningEnvelopes, 'handle']);
+
+        $this->assertEquals(EnvelopeStatus::Completed, $done->fresh()->status);
+        $this->assertEquals(EnvelopeStatus::Expired, $lost->fresh()->status);
+        Exceptions::assertReported(fn (\Fountainhead\SigningRoom\Exceptions\EnvelopeOrderNotOpenException $e) => str_contains($e->getMessage(), "Kuvert {$lost->id} "));
+    }
+
+    #[Test]
+    public function a_signature_found_by_polling_is_flagged_as_backfilled(): void
+    {
+        \Illuminate\Support\Facades\Event::fake([\Fountainhead\SigningRoom\Events\PartySignedEvent::class]);
+
+        $envelope = $this->sentEnvelope([['name' => 'A', 'email' => 'a@example.com'], ['name' => 'B', 'email' => 'b@example.com']]);
+        $this->idura->markSigned($this->party($envelope, 'a@example.com')->idura_signatory_id);
+
+        $this->sync();
+
+        \Illuminate\Support\Facades\Event::assertDispatched(\Fountainhead\SigningRoom\Events\PartySignedEvent::class, fn ($e) => $e->party->email === 'a@example.com' && $e->backfilled === true);
+    }
+
+    #[Test]
+    public function the_scheduled_jobs_leave_envelopes_created_before_the_cutoff_alone(): void
+    {
+        $old = $this->sentEnvelope([['name' => 'A', 'email' => 'a@example.com']]);
+        SigningEnvelope::whereKey($old->id)->update(['created_at' => now()->subMonths(3)]);
+        config(['signing-room.process_envelopes_created_since' => now()->subWeek()->toDateString()]);
+
+        $this->idura->markSigned($this->party($old, 'a@example.com')->idura_signatory_id);
+        $calls = $this->idura->orderStatusCalls;
+        $this->sync();
+        $this->assertSame($calls, $this->idura->orderStatusCalls, 'Sync må ikke røre en kuvert fra før grænsen.');
+
+        SigningEnvelope::whereKey($old->id)->update(['expires_at' => now()->subDay()]);
+        $this->app->call([new \Fountainhead\SigningRoom\Jobs\ExpireSigningEnvelopes, 'handle']);
+        $this->assertNotEquals(EnvelopeStatus::Expired, $old->fresh()->status);
+
+        $this->assertSame(0, SigningEnvelope::query()->tap(fn ($q) => SigningEnvelope::onlyProcessable($q))->whereKey($old->id)->count());
+    }
+
+    #[Test]
+    public function two_processes_notifying_the_same_round_send_each_mail_once(): void
+    {
+        $envelope = $this->sentEnvelope([
+            ['name' => 'R1', 'email' => 'r1@example.com', 'signing_round' => 1],
+            ['name' => 'R2', 'email' => 'r2@example.com', 'signing_round' => 2],
+        ]);
+
+        // Mens mailen til R2 lægges i kø, når en anden proces (sync) samme runde.
+        $fake = Notification::getFacadeRoot();
+        $service = $this->service;
+        $reentered = false;
+        Notification::swap(new class($fake, $service, $envelope, $reentered) extends \Illuminate\Support\Testing\Fakes\NotificationFake {
+            public function __construct(private $inner, private $service, private $envelope, private bool &$reentered) {}
+
+            public function send($notifiables, $notification)
+            {
+                if ($notification instanceof DocumentReadyNotification && ! $this->reentered) {
+                    $this->reentered = true;
+                    $this->service->notifyRoundParties($this->envelope->fresh(), 2);
+                }
+
+                $this->inner->send($notifiables, $notification);
+            }
+        });
+
+        $this->sign($this->party($envelope, 'r1@example.com'));
+
+        $fake->assertSentToTimes($this->party($envelope, 'r2@example.com'), DocumentReadyNotification::class, 1);
+    }
+
+    #[Test]
+    public function the_signature_data_is_written_in_the_same_update_as_the_claim(): void
+    {
+        $envelope = $this->sentEnvelope([['name' => 'A', 'email' => 'a@example.com'], ['name' => 'B', 'email' => 'b@example.com']]);
+        $a = $this->party($envelope, 'a@example.com');
+
+        $claimSql = null;
+        \Illuminate\Support\Facades\DB::listen(function ($query) use (&$claimSql) {
+            if ($claimSql === null && str_starts_with($query->sql, 'update "signing_parties"') && str_contains($query->sql, '"status" = ?')) {
+                $claimSql = $query->sql;
+            }
+        });
+
+        $this->service->handleSigned($a, ['event' => 'SIGNATORY_SIGNED', 'x' => 1]);
+
+        $this->assertNotNull($claimSql);
+        $this->assertStringContainsString('"signature_data"', $claimSql);
+        $this->assertSame(['event' => 'SIGNATORY_SIGNED', 'x' => 1], $a->fresh()->signature_data);
+    }
+
+    #[Test]
+    public function a_failing_sync_for_one_envelope_is_reported_once_not_every_hour(): void
+    {
+        Exceptions::fake();
+
+        $this->sentEnvelope([['name' => 'A', 'email' => 'a@example.com']]);
+        $this->idura->orderStatusFailure = new \RuntimeException('Idura API request failed with status 401: unauthorized (trace '.uniqid().')');
+
+        $this->sync();
+        $this->sync();
+
+        Exceptions::assertReportedCount(1);
+    }
 }

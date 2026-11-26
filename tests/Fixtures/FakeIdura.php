@@ -114,10 +114,20 @@ class FakeIdura extends IduraSignatureService
 
     public bool $orderMissing = false;
 
+    public ?\Throwable $orderStatusFailure = null;
+
+    public int $orderStatusCalls = 0;
+
     public bool $closeWithoutBlob = false;
 
     public function getOrderStatus(string $orderId): ?array
     {
+        $this->orderStatusCalls++;
+
+        if ($this->orderStatusFailure) {
+            throw $this->orderStatusFailure;
+        }
+
         if ($this->orderMissing) {
             return null;
         }

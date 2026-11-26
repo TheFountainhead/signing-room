@@ -32,6 +32,7 @@ class SendSigningReminders implements ShouldQueue
 
         $envelopes = SigningEnvelope::query()
             ->whereIn('status', [EnvelopeStatus::Sent, EnvelopeStatus::PartiallySigned])
+            ->tap(fn ($query) => SigningEnvelope::onlyProcessable($query))
             ->whereNotNull('reminder_interval')
             ->where(function ($q) {
                 $q->whereNull('expires_at')->orWhere('expires_at', '>', now());

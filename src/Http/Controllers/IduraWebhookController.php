@@ -92,8 +92,7 @@ class IduraWebhookController extends Controller
 
     private function handleExpired(SigningEnvelope $envelope): void
     {
-        $envelope->update(['status' => EnvelopeStatus::Expired]);
-        $envelope->logEvent(SigningEventType::EnvelopeExpired);
+        app(SigningRoomService::class)->expireEnvelope($envelope);
     }
 
     private function handleViewed(SigningEnvelope $envelope, ?SigningParty $party): void

@@ -52,6 +52,12 @@ return [
     // standardkøen. Sæt kun en egen kø, hvis en worker lytter på den.
     'queue' => env('SIGNING_ROOM_QUEUE'),
 
+    // De planlagte jobs (sync, påmindelser, udløb) rører kun kuverter oprettet
+    // fra og med denne dato (Y-m-d). null = alle. Til første deploy hos en
+    // host, hvor jobbene ikke har kørt før: uden grænse arbejder de hele
+    // efterslæbet igennem på én gang (påmindelser, udløb, rapporter).
+    'process_envelopes_created_since' => env('SIGNING_ROOM_PROCESS_SINCE'),
+
     'notifications' => [
         // PartySignedNotification til afsenderen ved hver underskrift, før
         // kuverten er færdig. Slået fra som standard, fordi hosts der selv
