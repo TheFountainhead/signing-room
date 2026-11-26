@@ -45,6 +45,16 @@ class EnvelopeShow extends Component
     {
         $party = $this->signingEnvelope->parties()->findOrFail($partyId);
 
+        // Kun en underskriver i den aktuelle runde af en sendt kuvert, som
+        // allerede har fået sin mail. En part i en senere runde (eller en
+        // kladde) må ikke få notified_at sat her: så ville den runde-mail,
+        // der skal komme, når turen er hans, blive sprunget over.
+        if (! $this->signingEnvelope->canRemind($party)) {
+            session()->flash('error', $party->name.' kan ikke få en påmindelse endnu: det er ikke hans eller hendes tur.');
+
+            return;
+        }
+
         $party->notify(new \Fountainhead\SigningRoom\Notifications\SigningReminderNotification($this->signingEnvelope));
         $party->increment('reminder_count');
         $party->update(['notified_at' => now()]);

@@ -137,7 +137,7 @@
                             @endphp
                             <span class="badge {{ $partyBadge }}">{{ $partyLabel }}</span>
 
-                            @if($party->status !== \Fountainhead\SigningRoom\Enums\SigningPartyStatus::Signed && $party->status !== \Fountainhead\SigningRoom\Enums\SigningPartyStatus::Rejected && $signingEnvelope->status !== \Fountainhead\SigningRoom\Enums\EnvelopeStatus::Cancelled)
+                            @if($signingEnvelope->canRemind($party))
                                 <button wire:click="sendReminder({{ $party->id }})" style="background: none; border: none; color: var(--ft-blue); cursor: pointer; font-size: 0.875rem; font-weight: 600;">
                                     Send påmindelse
                                 </button>

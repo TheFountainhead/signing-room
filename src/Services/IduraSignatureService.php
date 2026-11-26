@@ -299,7 +299,9 @@ GRAPHQL;
 
         $result = $this->query($query, ['id' => $orderId]);
 
-        return $result['signatureOrder'];
+        // null for en ordre, Idura ikke længere kender: kalderen behandler det
+        // som manglende PDF (SignedDocumentUnavailableException).
+        return $result['signatureOrder'] ?? [];
     }
 
     /**

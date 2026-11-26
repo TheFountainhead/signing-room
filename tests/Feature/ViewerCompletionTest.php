@@ -1845,4 +1845,60 @@ class ViewerCompletionTest extends TestCase
         $this->assertEquals(SigningPartyStatus::Viewed, $r2->status);
         $this->assertNull($r2->notified_at);
     }
+
+    #[Test]
+    public function a_manual_reminder_cannot_be_sent_to_a_party_whose_round_has_not_started(): void
+    {
+        $envelope = $this->sentEnvelope([
+            ['name' => 'R1', 'email' => 'r1@example.com', 'signing_round' => 1],
+            ['name' => 'R2', 'email' => 'r2@example.com', 'signing_round' => 2],
+        ]);
+        $r2 = $this->party($envelope, 'r2@example.com');
+
+        $component = new \Fountainhead\SigningRoom\Livewire\Admin\EnvelopeShow;
+        $component->mount($envelope);
+        $component->sendReminder($r2->id);
+
+        $this->assertNull($r2->fresh()->notified_at, 'notified_at må ikke sættes før partens runde.');
+        $this->assertStringContainsString('ikke hans eller hendes tur', (string) session('error'));
+
+        $this->sign($this->party($envelope, 'r1@example.com'));
+        Notification::assertSentToTimes($r2, DocumentReadyNotification::class, 1);
+
+        // Nu er det R2's tur: påmindelsen er tilladt.
+        $this->assertTrue($envelope->fresh()->canRemind($r2->fresh()));
+    }
+
+    #[Test]
+    public function late_error_or_viewed_webhooks_do_not_overwrite_a_signature(): void
+    {
+        config(['signing-room.idura.webhook_secret' => null]);
+        $envelope = $this->sentEnvelope([['name' => 'A', 'email' => 'a@example.com'], ['name' => 'B', 'email' => 'b@example.com']]);
+        $a = $this->party($envelope, 'a@example.com');
+        $this->sign($a);
+
+        foreach (['SIGNATORY_SIGN_ERROR', 'SIGNATORY_SIGN_LINK_OPENED'] as $event) {
+            $this->postJson(route('signing-room.webhook'), [
+                'event' => $event,
+                'signatureOrderId' => $envelope->idura_signature_order_id,
+                'signatoryId' => $a->idura_signatory_id,
+            ])->assertOk();
+        }
+
+        $this->assertEquals(SigningPartyStatus::Signed, $a->fresh()->status);
+        $this->assertNotNull($a->fresh()->viewed_at);
+    }
+
+    #[Test]
+    public function an_open_idura_order_block_is_visible_for_the_reminder_job(): void
+    {
+        Exceptions::fake();
+        $envelope = $this->sentEnvelope([['name' => 'A', 'email' => 'a@example.com']]);
+        $this->assertFalse($envelope->hasOpenBlock('idura_order_'));
+
+        $this->idura->orderStatus = 'CANCELLED';
+        $this->sync();
+
+        $this->assertTrue($envelope->fresh()->hasOpenBlock('idura_order_'));
+    }
 }

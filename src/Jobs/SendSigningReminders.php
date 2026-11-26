@@ -44,6 +44,12 @@ class SendSigningReminders implements ShouldQueue
             ->get();
 
         foreach ($envelopes as $envelope) {
+            // Idura-ordren er annulleret, udløbet eller ukendt: ingen påmindelse
+            // om et dokument, der ikke kan underskrives.
+            if ($envelope->hasOpenBlock('idura_order_')) {
+                continue;
+            }
+
             $unsignedParties = $envelope->unsignedCurrentRoundParties()
                 ->where('role', 'signer')
                 ->get();

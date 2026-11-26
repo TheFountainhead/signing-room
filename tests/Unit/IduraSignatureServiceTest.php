@@ -308,4 +308,12 @@ class IduraSignatureServiceTest extends TestCase
                 && str_contains($request['query'], 'signatoryRole');
         });
     }
+
+    #[Test]
+    public function get_order_documents_returns_an_empty_array_for_an_unknown_order(): void
+    {
+        Http::fake([self::ENDPOINT => Http::response(['data' => ['signatureOrder' => null]])]);
+
+        $this->assertSame([], $this->service()->getOrderDocuments('order-gone'));
+    }
 }

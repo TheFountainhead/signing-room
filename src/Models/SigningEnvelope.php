@@ -183,6 +183,28 @@ class SigningEnvelope extends Model
             && $this->parties()->where('role', 'signer')->whereNot('status', 'signed')->doesntExist();
     }
 
+    /**
+     * En manuel påmindelse giver kun mening for en underskriver i den aktuelle
+     * runde af en sendt kuvert, som allerede har fået sin runde-mail.
+     */
+    public function canRemind(SigningParty $party): bool
+    {
+        $role = $party->role instanceof \Fountainhead\SigningRoom\Enums\SigningPartyRole ? $party->role->value : (string) $party->role;
+
+        return in_array($this->status, [EnvelopeStatus::Sent, EnvelopeStatus::PartiallySigned], true)
+            && strtolower($role) === 'signer'
+            && (int) $party->signing_round === (int) $this->current_round
+            && $party->notified_at !== null
+            && ! in_array($party->status, [\Fountainhead\SigningRoom\Enums\SigningPartyStatus::Signed, \Fountainhead\SigningRoom\Enums\SigningPartyStatus::Rejected], true);
+    }
+
+    /** Der er en åben blokering, hvis årsag starter med $reasonPrefix. */
+    public function hasOpenBlock(string $reasonPrefix): bool
+    {
+        return $this->openBlocks()
+            ->contains(fn (SigningEvent $event) => str_starts_with((string) ($event->metadata['reason'] ?? ''), $reasonPrefix));
+    }
+
     public function hasRejectedSigner(): bool
     {
         return $this->parties()->where('role', 'signer')->where('status', 'rejected')->exists();

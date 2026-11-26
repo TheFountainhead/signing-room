@@ -91,8 +91,11 @@ class IduraWebhookController extends Controller
 
     private function handleError(SigningEnvelope $envelope, ?SigningParty $party, array $data): void
     {
+        // En sen eller gentaget fejl-webhook må ikke overskrive en underskrift.
         if ($party) {
-            $party->update(['status' => SigningPartyStatus::Error]);
+            SigningParty::query()->whereKey($party->getKey())
+                ->where('status', '!=', SigningPartyStatus::Signed->value)
+                ->update(['status' => SigningPartyStatus::Error->value]);
         }
         $envelope->logEvent(SigningEventType::PartyError, $party, $data);
     }
@@ -105,10 +108,12 @@ class IduraWebhookController extends Controller
     private function handleViewed(SigningEnvelope $envelope, ?SigningParty $party): void
     {
         if ($party && ! $party->viewed_at) {
-            $party->update([
-                'status' => SigningPartyStatus::Viewed,
-                'viewed_at' => now(),
-            ]);
+            // viewed_at registreres altid; status kun hvis parten ikke allerede
+            // har underskrevet eller afvist (sen webhook).
+            SigningParty::query()->whereKey($party->getKey())->update(['viewed_at' => now()]);
+            SigningParty::query()->whereKey($party->getKey())
+                ->whereNotIn('status', [SigningPartyStatus::Signed->value, SigningPartyStatus::Rejected->value])
+                ->update(['status' => SigningPartyStatus::Viewed->value]);
         }
         $envelope->logEvent(SigningEventType::PartyViewed, $party);
     }
