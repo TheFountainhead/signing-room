@@ -59,6 +59,8 @@ class SendSigningReminders implements ShouldQueue
                 ->whereNotNull('notified_at')
                 ->get();
 
+            $reminded = false;
+
             foreach ($unsignedParties as $party) {
                 $maxReminders = config('signing-room.defaults.max_reminders', 3);
                 if ($party->reminder_count >= $maxReminders) {
@@ -76,9 +78,15 @@ class SendSigningReminders implements ShouldQueue
                 $party->increment('reminder_count');
                 $party->update(['notified_at' => now()]);
                 $envelope->logEvent(SigningEventType::PartyReminded, $party);
+                $reminded = true;
             }
 
-            $envelope->update(['last_reminder_at' => now()]);
+            // Kun når nogen faktisk blev mindet: ellers holder kuvertens
+            // interval en part tilbage, som blev sprunget over, fordi den lige
+            // havde fået en mail, i næsten to intervaller.
+            if ($reminded) {
+                $envelope->update(['last_reminder_at' => now()]);
+            }
         }
     }
 }

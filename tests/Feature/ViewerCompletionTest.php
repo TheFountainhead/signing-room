@@ -2531,4 +2531,24 @@ class ViewerCompletionTest extends TestCase
 
         Notification::assertNotSentTo($this->party($envelope, 'interval@example.com'), \Fountainhead\SigningRoom\Notifications\SigningReminderNotification::class);
     }
+
+    #[Test]
+    public function a_run_that_reminds_nobody_does_not_push_the_envelope_interval_back(): void
+    {
+        $envelope = $this->sentEnvelope([['name' => 'Sprunget over', 'email' => 'skipped@example.com']]);
+        SigningEnvelope::whereKey($envelope->id)->update(['reminder_interval' => 7, 'last_reminder_at' => now()->subDays(30)]);
+        // Manuel påmindelse for fire dage siden: springes over i dag.
+        $this->party($envelope, 'skipped@example.com')->update(['notified_at' => now()->subDays(4)]);
+
+        $this->remind();
+        Notification::assertNotSentTo($this->party($envelope, 'skipped@example.com'), \Fountainhead\SigningRoom\Notifications\SigningReminderNotification::class);
+        $this->assertTrue($envelope->fresh()->last_reminder_at->lte(now()->subDays(29)), 'Kuvertens interval er uændret.');
+
+        // Tre dage senere er parten forfalden og mindes.
+        $this->travel(3)->days();
+        $this->remind();
+        $this->travelBack();
+
+        Notification::assertSentToTimes($this->party($envelope, 'skipped@example.com'), \Fountainhead\SigningRoom\Notifications\SigningReminderNotification::class, 1);
+    }
 }
