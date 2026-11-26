@@ -2588,20 +2588,18 @@ class ViewerCompletionTest extends TestCase
     }
 
     #[Test]
-    public function a_daily_run_where_every_envelope_failed_is_taken_over_by_the_next_run(): void
+    public function a_mail_sent_late_in_the_evening_is_not_reminded_the_next_morning(): void
     {
-        $old = $this->expiredAllSigned('down@example.com', now()->subMonths(2));
-        $this->oldBlock($old, ['reason' => 'completion_failed:RuntimeException:abc'], now()->subDays(20));
-        $this->inDailySlot();
-        $this->idura->orderStatusFailure = new \RuntimeException('Idura request failed with status 503');
+        $this->travelTo(now()->startOfDay()->setTime(23, 58));
+        $envelope = $this->sentEnvelope([['name' => 'Aften', 'email' => 'evening@example.com']]);
+        SigningEnvelope::whereKey($envelope->id)->update(['reminder_interval' => 1, 'last_reminder_at' => null]);
 
-        $this->sync();
-        $this->assertFalse(\Illuminate\Support\Facades\Cache::has(SyncIduraSignatureStatus::DAILY_RETRY_CACHE_KEY.':'.now()->toDateString()));
+        $this->travelTo(now()->addDay()->setTime(9, 0));
+        $this->remind();
+        Notification::assertNotSentTo($this->party($envelope, 'evening@example.com'), \Fountainhead\SigningRoom\Notifications\SigningReminderNotification::class);
 
-        $this->idura->orderStatusFailure = null;
-        $this->travel(1)->hour();
-        $this->sync();
-
-        $this->assertEquals(EnvelopeStatus::Completed, $old->fresh()->status);
+        $this->travelTo(now()->addDay()->setTime(9, 0));
+        $this->remind();
+        Notification::assertSentToTimes($this->party($envelope, 'evening@example.com'), \Fountainhead\SigningRoom\Notifications\SigningReminderNotification::class, 1);
     }
 }

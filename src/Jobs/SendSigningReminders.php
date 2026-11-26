@@ -71,9 +71,9 @@ class SendSigningReminders implements ShouldQueue
                     continue;
                 }
 
-                // Pr. part: først når der er gået reminder_interval dage (på
-                // datoen, ikke klokkeslættet, så jobbet kl. 09 ikke rammer et
-                // par sekunder for tidligt) siden partens seneste mail. Dækker
+                // Pr. part: først når der er gået reminder_interval døgn siden
+                // partens seneste mail, med en times tolerance, så jobbet kl. 09
+                // ikke rammer et par sekunder for tidligt. Dækker
                 // en nyligt sendt kuvert, en manuel påmindelse og en runde-mail
                 // midt i intervallet, uden at holde andre parter tilbage.
                 if (! self::isDue($party->notified_at, (int) $envelope->reminder_interval)) {
@@ -96,7 +96,7 @@ class SendSigningReminders implements ShouldQueue
 
     private static function isDue(\DateTimeInterface $notifiedAt, int $interval): bool
     {
-        return \Illuminate\Support\Carbon::instance($notifiedAt)->startOfDay()
-            ->lte(now()->startOfDay()->subDays(max(1, $interval)));
+        return \Illuminate\Support\Carbon::instance($notifiedAt)
+            ->lte(now()->subDays(max(1, $interval))->addHour());
     }
 }
