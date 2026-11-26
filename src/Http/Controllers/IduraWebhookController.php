@@ -28,9 +28,16 @@ class IduraWebhookController extends Controller
             return response()->json(['status' => 'ignored', 'reason' => 'unknown order'], 200);
         }
 
+        // Inden for kuverten: et signatory-id fra en anden ordre må ikke ramme.
         $party = $signatoryId
-            ? SigningParty::where('idura_signatory_id', $signatoryId)->first()
+            ? SigningParty::where('signing_envelope_id', $envelope->id)->where('idura_signatory_id', $signatoryId)->first()
             : null;
+
+        // Ukendt signatory (fx en slettet gammel kopimodtager hos Idura):
+        // ignorér i stedet for en TypeError og en 500, som Idura gentager.
+        if ($party === null && in_array($event, ['SIGNATORY_SIGNED', 'SIGNATORY_REJECTED'], true)) {
+            return response()->json(['status' => 'ignored', 'reason' => 'unknown signatory'], 200);
+        }
 
         match ($event) {
             'SIGNATORY_SIGNED' => $service->handleSigned($party, $request->all()),
@@ -84,25 +91,29 @@ class IduraWebhookController extends Controller
 
     private function handleError(SigningEnvelope $envelope, ?SigningParty $party, array $data): void
     {
+        // En sen eller gentaget fejl-webhook må ikke overskrive en underskrift.
         if ($party) {
-            $party->update(['status' => SigningPartyStatus::Error]);
+            SigningParty::query()->whereKey($party->getKey())
+                ->whereNotIn('status', [SigningPartyStatus::Signed->value, SigningPartyStatus::Rejected->value])
+                ->update(['status' => SigningPartyStatus::Error->value]);
         }
         $envelope->logEvent(SigningEventType::PartyError, $party, $data);
     }
 
     private function handleExpired(SigningEnvelope $envelope): void
     {
-        $envelope->update(['status' => EnvelopeStatus::Expired]);
-        $envelope->logEvent(SigningEventType::EnvelopeExpired);
+        app(SigningRoomService::class)->expireEnvelope($envelope);
     }
 
     private function handleViewed(SigningEnvelope $envelope, ?SigningParty $party): void
     {
         if ($party && ! $party->viewed_at) {
-            $party->update([
-                'status' => SigningPartyStatus::Viewed,
-                'viewed_at' => now(),
-            ]);
+            // viewed_at registreres altid; status kun hvis parten ikke allerede
+            // har underskrevet eller afvist (sen webhook).
+            SigningParty::query()->whereKey($party->getKey())->update(['viewed_at' => now()]);
+            SigningParty::query()->whereKey($party->getKey())
+                ->whereNotIn('status', [SigningPartyStatus::Signed->value, SigningPartyStatus::Rejected->value])
+                ->update(['status' => SigningPartyStatus::Viewed->value]);
         }
         $envelope->logEvent(SigningEventType::PartyViewed, $party);
     }

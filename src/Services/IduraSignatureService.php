@@ -117,8 +117,14 @@ GRAPHQL;
     /**
      * Add signatories to an existing signature order.
      *
-     * Each signatory should have: reference, role, signing_sequence,
-     * and optionally cpr (for evidence validation) and preapproved.
+     * Each signatory should have: reference, signatory_role (SIGNER/VIEWER,
+     * default SIGNER), signing_sequence, and optionally cpr (for evidence
+     * validation).
+     *
+     * Rollen sendes som `signatoryRole`. Feltet `role` i AddSignatoryInput er
+     * forældet fritekst ("Will be visible in the document output") og satte
+     * aldrig rollen: alle blev oprettet som SIGNER, og teksten "SIGNER" eller
+     * "VIEWER" kom med i PDF'en.
      *
      * @return array Array of signatory objects with id, href, reference.
      */
@@ -132,7 +138,7 @@ mutation AddSignatory($input: AddSignatoryInput!) {
             href
             reference
             status
-            role
+            signatoryRole
         }
     }
 }
@@ -150,19 +156,23 @@ GRAPHQL;
                 ];
             }
 
+            if (array_key_exists('preapproved', $signatory)) {
+                // Findes kun i SignatoryDocumentInput, ikke i AddSignatoryInput.
+                throw new \InvalidArgumentException('addSignatories: preapproved understøttes ikke (findes kun pr. dokument hos Idura).');
+            }
+
+            // Bagudkompatibel: den gamle nøgle 'role' betyder signatoryRole.
+            $signatory['signatory_role'] ??= $signatory['role'] ?? null;
+
             $signatoryInput = [
                 'signatureOrderId' => $orderId,
                 'reference' => $signatory['reference'],
-                'role' => strtoupper($signatory['role'] ?? 'SIGNER'),
+                'signatoryRole' => strtoupper($signatory['signatory_role'] ?? 'SIGNER'),
                 'signingSequence' => $signatory['signing_sequence'] ?? 1,
             ];
 
             if (! empty($evidenceValidation)) {
                 $signatoryInput['evidenceValidation'] = $evidenceValidation;
-            }
-
-            if (isset($signatory['preapproved']) && $signatory['preapproved']) {
-                $signatoryInput['preapproved'] = true;
             }
 
             $result = $this->query($mutation, ['input' => $signatoryInput]);
@@ -194,7 +204,7 @@ mutation CloseSignatureOrder($input: CloseSignatureOrderInput!) {
                 id
                 reference
                 status
-                role
+                signatoryRole
             }
         }
     }
@@ -240,8 +250,10 @@ GRAPHQL;
 
     /**
      * Fetch the current status of a signature order (for fallback polling).
+     *
+     * @return array|null null når Idura ikke kender ordren (slettet/ukendt)
      */
-    public function getOrderStatus(string $orderId): array
+    public function getOrderStatus(string $orderId): ?array
     {
         $query = <<<'GRAPHQL'
 query GetSignatureOrder($id: ID!) {
@@ -252,7 +264,7 @@ query GetSignatureOrder($id: ID!) {
             id
             reference
             status
-            role
+            signatoryRole
             href
         }
         documents {
@@ -265,7 +277,38 @@ GRAPHQL;
 
         $result = $this->query($query, ['id' => $orderId]);
 
-        return $result['signatureOrder'];
+        return $result['signatureOrder'] ?? null;
+    }
+
+    /**
+     * Hent dokumenterne inkl. blob for en ordre, der allerede er lukket.
+     *
+     * Bruges når closeSignatureOrder lykkedes, men lagringen af PDF'en fejlede.
+     * Idura beholder dokumenterne i retainDocumentsForDays dage efter lukning
+     * (vi sender retain_documents, default 7), så et nyt forsøg skal hente
+     * dem her i stedet for at kalde closeSignatureOrder igen.
+     */
+    public function getOrderDocuments(string $orderId): array
+    {
+        $query = <<<'GRAPHQL'
+query GetSignatureOrderDocuments($id: ID!) {
+    signatureOrder(id: $id) {
+        id
+        status
+        documents {
+            id
+            title
+            blob
+        }
+    }
+}
+GRAPHQL;
+
+        $result = $this->query($query, ['id' => $orderId]);
+
+        // Et tomt array for en ordre, Idura ikke længere kender: kalderen
+        // behandler det som manglende PDF (SignedDocumentUnavailableException).
+        return $result['signatureOrder'] ?? [];
     }
 
     /**

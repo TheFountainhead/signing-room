@@ -31,6 +31,12 @@
         </div>
     @endif
 
+    @if(session('error'))
+        <div style="background: #FFEBEE; color: #CC0000; padding: 16px; border-radius: 8px; margin-bottom: 24px;">
+            {{ session('error') }}
+        </div>
+    @endif
+
     @if(session('warning'))
         <div style="background: #FFF8E1; color: #F57F17; padding: 16px; border-radius: 8px; margin-bottom: 24px; border: 1px solid #FFE082;">
             {{ session('warning') }}
@@ -131,7 +137,7 @@
                             @endphp
                             <span class="badge {{ $partyBadge }}">{{ $partyLabel }}</span>
 
-                            @if($party->status !== \Fountainhead\SigningRoom\Enums\SigningPartyStatus::Signed && $party->status !== \Fountainhead\SigningRoom\Enums\SigningPartyStatus::Rejected && $signingEnvelope->status !== \Fountainhead\SigningRoom\Enums\EnvelopeStatus::Cancelled)
+                            @if($signingEnvelope->canRemind($party))
                                 <button wire:click="sendReminder({{ $party->id }})" style="background: none; border: none; color: var(--ft-blue); cursor: pointer; font-size: 0.875rem; font-weight: 600;">
                                     Send påmindelse
                                 </button>
@@ -162,8 +168,8 @@
                                 ? $event->event_type->value
                                 : (string) $event->event_type;
                             $dotColor = match(true) {
-                                str_contains($eventValue, 'signed'), str_contains($eventValue, 'completed') => 'var(--ft-green)',
-                                str_contains($eventValue, 'rejected'), str_contains($eventValue, 'cancelled'), str_contains($eventValue, 'error'), str_contains($eventValue, 'expired') => 'var(--ft-red)',
+                                $eventValue === 'envelope.unblocked', str_contains($eventValue, 'signed'), str_contains($eventValue, 'completed') => 'var(--ft-green)',
+                                str_contains($eventValue, 'rejected'), str_contains($eventValue, 'cancelled'), str_contains($eventValue, 'error'), str_contains($eventValue, 'expired'), str_contains($eventValue, 'blocked') => 'var(--ft-red)',
                                 str_contains($eventValue, 'sent'), str_contains($eventValue, 'notified'), str_contains($eventValue, 'viewed') => 'var(--ft-blue)',
                                 default => 'var(--ft-grey)',
                             };
@@ -173,6 +179,8 @@
                                 'envelope.completed' => 'Alle underskrifter modtaget',
                                 'envelope.expired' => 'Udløbet',
                                 'envelope.cancelled' => 'Annulleret',
+                                'envelope.blocked' => 'Fuldførelse blokeret, kræver handling',
+                                'envelope.unblocked' => 'Blokering løst',
                                 'party.notified' => 'Notifikation sendt',
                                 'party.reminded' => 'Påmindelse sendt',
                                 'party.viewed' => 'Dokument åbnet',

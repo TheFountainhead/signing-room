@@ -18,7 +18,10 @@ class SendSigningReminders implements ShouldQueue
 
     public function __construct()
     {
-        $this->onQueue('signing-room');
+        // Standardkøen, medmindre hosten vælger en anden: en egen kø, som
+        // ingen worker lytter på, betyder at jobbet aldrig kører
+        // (Frankston-masters Horizon lytter kun på default m.fl.).
+        $this->onQueue(config('signing-room.queue'));
     }
 
     public function handle(): void
@@ -29,6 +32,7 @@ class SendSigningReminders implements ShouldQueue
 
         $envelopes = SigningEnvelope::query()
             ->whereIn('status', [EnvelopeStatus::Sent, EnvelopeStatus::PartiallySigned])
+            ->tap(fn ($query) => SigningEnvelope::onlyProcessable($query))
             ->whereNotNull('reminder_interval')
             ->where(function ($q) {
                 $q->whereNull('expires_at')->orWhere('expires_at', '>', now());
@@ -40,8 +44,19 @@ class SendSigningReminders implements ShouldQueue
             ->get();
 
         foreach ($envelopes as $envelope) {
+            // Idura-ordren er annulleret, udløbet eller ukendt: ingen påmindelse
+            // om et dokument, der ikke kan underskrives.
+            if ($envelope->hasOpenBlock('idura_order_')) {
+                continue;
+            }
+
+            // Kun parter, der har fået deres runde-mail: en part uden
+            // notified_at venter på DocumentReady (sync prøver igen), og en
+            // påmindelse ville sætte notified_at og få den til at blive
+            // sprunget over.
             $unsignedParties = $envelope->unsignedCurrentRoundParties()
                 ->where('role', 'signer')
+                ->whereNotNull('notified_at')
                 ->get();
 
             foreach ($unsignedParties as $party) {

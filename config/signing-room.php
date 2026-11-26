@@ -48,6 +48,25 @@ return [
         'webhook_middleware' => ['api'],
     ],
 
+    // Kø til pakkens planlagte jobs (sync, påmindelser, udløb). null =
+    // standardkøen. Sæt kun en egen kø, hvis en worker lytter på den.
+    'queue' => env('SIGNING_ROOM_QUEUE'),
+
+    // De planlagte jobs (sync, påmindelser, udløb) rører kun kuverter oprettet
+    // fra og med denne dato (Y-m-d). null = alle. Til første deploy hos en
+    // host, hvor jobbene ikke har kørt før: uden grænse arbejder de hele
+    // efterslæbet igennem på én gang (påmindelser, udløb, rapporter).
+    'process_envelopes_created_since' => env('SIGNING_ROOM_PROCESS_SINCE'),
+
+    'notifications' => [
+        // PartySignedNotification til afsenderen ved hver underskrift, før
+        // kuverten er færdig. Slået fra som standard, fordi hosts der selv
+        // lytter på PartySignedEvent (Frankston-master og dannebrog-v1 via
+        // App\Listeners\NotifyAdminOnSignature) ellers sender to mails.
+        // Slå til på hosts uden egen listener (sign.frankston.io).
+        'party_signed' => filter_var(env('SIGNING_ROOM_NOTIFY_PARTY_SIGNED', false), FILTER_VALIDATE_BOOLEAN),
+    ],
+
     // Callable that resolves branding for a given user_id.
     // Should return ['company_name' => string, 'logo_url' => string|null] or null.
     'branding_resolver' => null,

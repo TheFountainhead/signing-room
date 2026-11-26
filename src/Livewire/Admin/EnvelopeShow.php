@@ -28,7 +28,14 @@ class EnvelopeShow extends Component
     public function sendEnvelope(): void
     {
         $service = app(SigningRoomService::class);
-        $service->sendEnvelope($this->signingEnvelope);
+
+        try {
+            $service->sendEnvelope($this->signingEnvelope);
+        } catch (\Fountainhead\SigningRoom\Exceptions\EnvelopeHasNoSignerException $e) {
+            session()->flash('error', $e->getMessage());
+
+            return;
+        }
 
         session()->flash('success', 'Dokumentet er sendt til underskrift.');
         $this->signingEnvelope->refresh();
@@ -37,6 +44,16 @@ class EnvelopeShow extends Component
     public function sendReminder(int $partyId): void
     {
         $party = $this->signingEnvelope->parties()->findOrFail($partyId);
+
+        // Kun en underskriver i den aktuelle runde af en sendt kuvert, som
+        // allerede har fået sin mail. En part i en senere runde (eller en
+        // kladde) må ikke få notified_at sat her: så ville den runde-mail,
+        // der skal komme, når turen er hans, blive sprunget over.
+        if (! $this->signingEnvelope->canRemind($party)) {
+            session()->flash('error', 'Der kan ikke sendes en påmindelse til '.$party->name.' nu. Påmindelser går kun til underskrivere i den aktuelle runde af en sendt kuvert, som har fået dokumentet.');
+
+            return;
+        }
 
         $party->notify(new \Fountainhead\SigningRoom\Notifications\SigningReminderNotification($this->signingEnvelope));
         $party->increment('reminder_count');

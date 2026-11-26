@@ -11,7 +11,12 @@ use Fountainhead\SigningRoom\Models\SigningParty;
 use Fountainhead\SigningRoom\Notifications\DocumentReadyNotification;
 use Fountainhead\SigningRoom\Notifications\EnvelopeCompletedNotification;
 use Fountainhead\SigningRoom\Notifications\PartyRejectedNotification;
-use Fountainhead\SigningRoom\Events\PartySignedEvent;
+use Fountainhead\SigningRoom\Notifications\PartySignedNotification;
+use Fountainhead\SigningRoom\Jobs\DispatchPartySignedEvent;
+use Fountainhead\SigningRoom\Exceptions\EnvelopeHasNoSignerException;
+use Fountainhead\SigningRoom\Exceptions\EnvelopeOrderNotOpenException;
+use Fountainhead\SigningRoom\Exceptions\SignedDocumentUnavailableException;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 
 class SigningRoomService
@@ -32,6 +37,16 @@ class SigningRoomService
         ?int $reminderInterval = null,
         ?int $createdBy = null,
     ): SigningEnvelope {
+        $hasSigner = collect($parties)->contains(
+            fn (array $party) => self::roleValue($party['role'] ?? null) === SigningPartyRole::Signer->value
+        );
+
+        if (! $hasSigner) {
+            // En kuvert uden underskrivere ville blive "fuldført" uden en
+            // eneste underskrift.
+            throw new EnvelopeHasNoSignerException;
+        }
+
         $expiresInDays ??= config('signing-room.defaults.expires_in_days', 30);
         $reminderInterval ??= config('signing-room.defaults.reminder_interval', 7);
 
@@ -55,7 +70,7 @@ class SigningRoomService
                 'email' => $partyData['email'],
                 'phone' => $partyData['phone'] ?? null,
                 'cpr_last_four' => $partyData['cpr_last_four'] ?? null,
-                'role' => $partyData['role'] ?? SigningPartyRole::Signer->value,
+                'role' => self::roleValue($partyData['role'] ?? null),
                 'signing_round' => $partyData['signing_round'] ?? 1,
                 'status' => SigningPartyStatus::Pending,
             ]);
@@ -71,6 +86,21 @@ class SigningRoomService
      */
     public function sendEnvelope(SigningEnvelope $envelope): SigningEnvelope
     {
+        if (! $envelope->parties()->where('role', SigningPartyRole::Signer->value)->exists()) {
+            throw new EnvelopeHasNoSignerException;
+        }
+
+        // En kladde, hvis udløbsdato er passeret (gemt for længe siden), får
+        // en frisk udløbsdato ved afsendelse. Ellers får Idura 0 eller færre
+        // dage, alle links er ugyldige, og det daglige job udløber den straks.
+        // Under et døgn tilbage tæller også: Idura får hele dage, og 0 dage er
+        // det samme som udløbet.
+        if ($envelope->expires_at === null || $envelope->expires_at->lt(now()->addDay())) {
+            $envelope->update([
+                'expires_at' => now()->addDays((int) config('signing-room.defaults.expires_in_days', 30)),
+            ]);
+        }
+
         $disk = Storage::disk(config('signing-room.storage.disk', 'local'));
         $pdfContents = $disk->get($envelope->original_document);
         $pdfBase64 = base64_encode($pdfContents);
@@ -85,20 +115,38 @@ class SigningRoomService
             documentTitle: $envelope->title,
             webhookUrl: $webhookUrl,
             redirectUri: $redirectUri,
-            expiresInDays: (int) now()->diffInDays($envelope->expires_at),
+            expiresInDays: max(1, (int) now()->diffInDays($envelope->expires_at)),
         );
 
         $envelope->update([
             'idura_signature_order_id' => $order['id'],
         ]);
 
-        // Add all parties as signatories
-        $signatories = $envelope->parties->map(fn (SigningParty $party) => [
-            'reference' => $party->uuid,
-            'role' => strtoupper($party->role instanceof SigningPartyRole ? $party->role->value : $party->role),
-            'signing_sequence' => $party->signing_round,
-            'cpr' => $party->cpr_last_four ?: null,
-        ])->all();
+        // Kun underskrivere oprettes hos Idura. Tidligere blev kopimodtagere
+        // også sendt, og fordi rollen gik i det forældede fritekstfelt `role`
+        // i stedet for `signatoryRole`, blev de oprettet som SIGNER. En sådan
+        // "underskriver" underskriver aldrig, og så afviser Idura
+        // closeSignatureOrder med "Signature order has open signatory". Det
+        // låste kuvert 35 fast i prod (25/11-2026).
+        //
+        // Kopimodtageren får besked via EnvelopeCompletedNotification, som ikke
+        // bruger noget Idura-id. Mailen linker til portalens forside (intet
+        // token-link), og portalen viser kun parter, hvis cpr_hash matcher
+        // MitID-login. En kopimodtager får normalt ingen cpr_hash, så hun ser
+        // som udgangspunkt ikke dokumentet i portalen (eksisterende
+        // begrænsning, uændret her). En rigtig Idura-VIEWER ville kun kunne se
+        // dokumentet, mens ordren er åben, medmindre der er evidence
+        // validation (CPR).
+        $signatories = $envelope->parties
+            ->filter(fn (SigningParty $party) => $this->isSigner($party))
+            ->map(fn (SigningParty $party) => [
+                'reference' => $party->uuid,
+                'signatory_role' => 'SIGNER',
+                'signing_sequence' => $party->signing_round,
+                'cpr' => $party->cpr_last_four ?: null,
+            ])
+            ->values()
+            ->all();
 
         $iduraSignatories = $this->idura->addSignatories($order['id'], $signatories);
 
@@ -124,48 +172,287 @@ class SigningRoomService
         // Notify first-round parties
         $this->notifyRoundParties($envelope, 1);
 
+        // Første runde kan bestå af kopimodtagere alene (fx Frankston-masters
+        // sekventielle tilstand, hvor hver part får sin egen runde). Så går
+        // vi straks videre til den første runde med underskrivere.
+        if ($envelope->isCurrentRoundComplete() && ! $envelope->isAllRoundsComplete()) {
+            $this->advanceRound($envelope);
+        }
+
         return $envelope->fresh('parties');
     }
 
     /**
      * Handle a party signing event from the webhook.
+     *
+     * @param  bool  $progress  false: registrér kun underskriften (CPR, event),
+     *     uden rundeskift, fuldførelse eller mails. Bruges, når Idura-ordren er
+     *     udløbet eller annulleret, men underskriften blev givet før.
      */
-    public function handleSigned(SigningParty $party, ?array $signatureData = null): void
+    public function handleSigned(SigningParty $party, ?array $signatureData = null, bool $progress = true, bool $backfilled = false, bool $dispatchEvent = true): bool
     {
-        if ($party->status === SigningPartyStatus::Signed) {
-            return;
+        // Claim underskriften atomisk. En gentaget webhook og sync-jobbet kan
+        // behandle samme part samtidig; kun den der faktisk flytter rækken til
+        // signed, fortsætter. Ellers kommer der dobbelt-mails og dobbelt
+        // rundeskift.
+        //
+        // Betingede query-builder-updates (her, PartiallySigned og Completed)
+        // affyrer ikke Eloquent-events (updating/updated/saved). Ingen host
+        // lytter på dem for SigningParty/SigningEnvelope (tjekket 26/11-2026:
+        // Frankston-master, dannebrog-v1, signing-room-app; sidstnævnte har kun
+        // creating-hooks og global scopes, som stadig gælder). Lyt på
+        // PartySignedEvent eller signing_events i stedet.
+        // signature_data skrives i samme betingede update (krypteret via
+        // modellens cast), så en proces, der dør efter claimet, ikke efterlader
+        // en underskrift uden webhookens data.
+        $encryptedSignatureData = (new SigningParty)
+            ->forceFill(['signature_data' => $signatureData])
+            ->getAttributes()['signature_data'] ?? null;
+
+        $claimed = SigningParty::query()
+            ->whereKey($party->getKey())
+            ->where('status', '!=', SigningPartyStatus::Signed->value)
+            ->update([
+                'status' => SigningPartyStatus::Signed->value,
+                'signed_at' => now(),
+                'signature_data' => $encryptedSignatureData,
+            ]);
+
+        if ($claimed === 0) {
+            return false;
         }
 
-        $party->update([
-            'status' => SigningPartyStatus::Signed,
-            'signed_at' => now(),
-            'signature_data' => $signatureData,
-        ]);
+        $party->refresh();
 
-        // Fetch and store CPR from Idura evidence
-        if ($party->idura_signatory_id) {
-            $cpr = $this->idura->getSignatoryEvidence($party->idura_signatory_id);
-            if ($cpr) {
-                $party->cpr = $cpr;
-                $party->save();
-            }
-        }
+        $this->recordSignature($party, $backfilled, $dispatchEvent);
 
         $envelope = $party->envelope;
 
-        $envelope->logEvent(SigningEventType::PartySigned, $party);
+        // Annulleret eller udløbet: underskriften registreres, men kuverten
+        // rykkes og mailes ikke.
+        if (! $progress || in_array($envelope->status, [EnvelopeStatus::Cancelled, EnvelopeStatus::Expired], true)) {
+            // Udløbet lokalt (dagligt job), mens Idura-ordren måske stadig er
+            // åben: kom den sidste underskrift alligevel, forsøges fuldførelsen
+            // (completeEnvelope rapporterer selv, hvis ordren ikke kan lukkes).
+            if ($progress && $envelope->status === EnvelopeStatus::Expired && $envelope->isAllRoundsComplete()) {
+                $this->completeEnvelope($envelope);
+            }
 
-        PartySignedEvent::dispatch($envelope, $party);
+            return true;
+        }
 
         if ($envelope->isAllRoundsComplete()) {
+            // Underskriften er gemt. Fejler fuldførelsen (Idura, disk),
+            // rapporterer completeEnvelope det selv, og SyncIduraSignatureStatus
+            // prøver igen. Afsenderen får EnvelopeCompletedNotification i stedet
+            // for PartySignedNotification, så han ikke får to mails.
             $this->completeEnvelope($envelope);
-        } elseif ($envelope->isCurrentRoundComplete()) {
+
+            return true;
+        }
+
+        if ($envelope->isCurrentRoundComplete()) {
             $this->advanceRound($envelope);
         } else {
-            $envelope->update([
-                'status' => EnvelopeStatus::PartiallySigned,
-            ]);
+            // Betinget: en samtidig webhook kan lige have fuldført kuverten.
+            // En ubetinget skrivning ville sætte Completed tilbage til
+            // PartiallySigned, og sync ville så fuldføre (og maile) igen.
+            SigningEnvelope::query()
+                ->whereKey($envelope->getKey())
+                ->whereIn('status', [EnvelopeStatus::Sent->value, EnvelopeStatus::PartiallySigned->value])
+                ->whereNull('completed_at')
+                ->update(['status' => EnvelopeStatus::PartiallySigned->value]);
+
+            $envelope->refresh();
         }
+
+        // Først når kuvertens tilstand er opdateret: en fejlende mail må ikke
+        // efterlade kuverten uden rundeskift. Slået fra som standard, se
+        // signing-room.notifications.party_signed.
+        // Ikke for en underskrift af ukendt alder (fundet ved polling): den
+        // skal ikke meldes som ny. Heller ikke når en part har afvist: så
+        // bliver kuverten aldrig færdig, og "Du får besked, når alle parter
+        // har underskrevet" er usandt.
+        if (config('signing-room.notifications.party_signed', false) && $dispatchEvent && ! $envelope->hasRejectedSigner()) {
+            try {
+                $notification = PartySignedNotification::forParty($envelope, $party);
+
+                // Har alle underskrivere underskrevet, men kuverten venter på
+                // noget andet (fx en gammel kopimodtager hos Idura), er
+                // "Du får besked, når alle parter har underskrevet" usandt.
+                if ($notification->signedCount < $notification->signerCount) {
+                    $this->notifyCreator($envelope, $notification);
+                }
+            } catch (\Throwable $e) {
+                report($e);
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Det der følger efter selve claimet af en underskrift: CPR fra Idura,
+     * party.signed-event og PartySignedEvent.
+     *
+     * Idempotent: gør intet, hvis party.signed-eventet allerede findes for
+     * parten. Kaldes af handleSigned og af SyncIduraSignatureStatus for parter,
+     * der blev claimet, men hvor dette trin aldrig blev fuldført.
+     *
+     * @param  bool  $dispatchEvent  false: party.signed logges, men
+     *     PartySignedEvent affyres ikke (fx en underskrift fundet ved polling,
+     *     hvis alder er ukendt, så host-listeners ikke fakturerer eller mailer
+     *     en gammel underskrift som ny). Det logges som advarsel.
+     */
+    public function recordSignature(SigningParty $party, bool $backfilled = false, bool $dispatchEvent = true): void
+    {
+        $envelope = $party->envelope;
+
+        if ($this->hasRecordedSignature($envelope, $party)) {
+            return;
+        }
+
+        // CPR er bevis, ikke en forudsætning for underskriften. Fejler Idura
+        // her (fx 503), må event og rundeskift ikke gå tabt; CPR kan hentes
+        // senere med signing-room:backfill-cpr.
+        if ($party->idura_signatory_id && $party->cpr_hash === null) {
+            try {
+                $cpr = $this->idura->getSignatoryEvidence($party->idura_signatory_id);
+                if ($cpr) {
+                    $party->cpr = $cpr;
+                    $party->save();
+                }
+            } catch (\Throwable $e) {
+                report($e);
+            }
+        }
+
+        // Tjek og party.signed under en kort rækkelås på parten: to
+        // sync-kørsler (eller sync og webhook), der indhenter samme
+        // underskrift samtidig, må ikke begge affyre eventet (host-fakturering).
+        $logged = DB::transaction(function () use ($envelope, $party, $dispatchEvent) {
+            SigningParty::query()->whereKey($party->getKey())->lockForUpdate()->first();
+
+            if ($this->hasRecordedSignature($envelope, $party)) {
+                return false;
+            }
+
+            $envelope->logEvent(SigningEventType::PartySigned, $party, $dispatchEvent ? null : ['event_skipped' => 'unknown_age']);
+
+            return true;
+        });
+
+        if (! $logged) {
+            return;
+        }
+
+        if (! $dispatchEvent) {
+            \Illuminate\Support\Facades\Log::warning('signing-room: underskrift registreret uden PartySignedEvent (fundet ved polling, ukendt alder). Tjek om host-listeners (fx fakturering) skal have den.', [
+                'envelope_id' => $envelope->id,
+                'party_id' => $party->id,
+            ]);
+
+            return;
+        }
+
+        // Via køen, ét forsøg: fejler en host-listener, ender jobbet i
+        // failed_jobs i stedet for at gå tabt (party.signed er allerede
+        // logget, så recordSignature affyrer ikke igen). Ingen automatisk
+        // retry; en manuel queue:retry kører også de listeners, der lykkedes,
+        // så tjek først (se DispatchPartySignedEvent). Med sync-køen kaster
+        // jobbet med det samme; så rapporteres fejlen, og underskriften
+        // behandles færdig.
+        try {
+            DispatchPartySignedEvent::dispatch($envelope, $party, $backfilled);
+        } catch (\Throwable $e) {
+            report($e);
+        }
+    }
+
+    /**
+     * Markér en kuvert udløbet (Idura-ordren udløb, webhook eller dagligt job).
+     *
+     * En kuvert, der reelt er fuldført (completed_at/signed_document), udløber
+     * ikke; dens status rettes tilbage. Havde alle underskrevet, men blev
+     * kuverten aldrig fuldført, kan den signerede PDF ikke længere hentes: det
+     * rapporteres én gang i stedet for at forsvinde stille.
+     *
+     * Returnerer true hvis kuverten blev sat til Expired nu.
+     */
+    public function expireEnvelope(SigningEnvelope $envelope, bool $iduraExpired = true): bool
+    {
+        $envelope->refresh();
+
+        // En anden proces er i gang med at fuldføre: rør den ikke.
+        if ($this->hasFreshCompletionClaim($envelope)) {
+            return false;
+        }
+
+        // Lokalt udløb (dagligt job), mens Idura-ordren måske stadig kan
+        // lukkes: har alle underskrevet, forsøges fuldførelsen. Lykkes den ikke
+        // nu, udløber kuverten ikke lokalt; sync prøver igen, og udløber
+        // ordren hos Idura, rapporterer sync det.
+        // allSignersSigned(), ikke isAllRoundsComplete(): også når en gammel
+        // kopimodtager blokerer lukningen, findes underskrifterne, og
+        // kuverten må ikke udløbe stille lokalt (sync rapporterer blokeringen).
+        if (! $iduraExpired && ! $envelope->isCompleted() && $envelope->allSignersSigned()) {
+            $this->completeEnvelope($envelope);
+            $envelope->refresh();
+
+            if (! $envelope->isCompleted()) {
+                return false;
+            }
+        }
+
+        if ($envelope->isCompleted()) {
+            if ($envelope->status !== EnvelopeStatus::Completed) {
+                SigningEnvelope::query()->whereKey($envelope->getKey())
+                    ->update(['status' => EnvelopeStatus::Completed->value]);
+            }
+
+            return false;
+        }
+
+        // Kun her, ved Idura-udløb: alle underskrivere havde underskrevet, men
+        // kuverten blev aldrig fuldført (også hvis en gammel kopimodtager
+        // blokerede). Samme nøgle som closeOrderAndStore bruger for en udløbet
+        // ordre, så det bliver én rapport.
+        if ($envelope->allSignersSigned()) {
+            $envelope->reportBlockedOnce(self::orderNotOpenReason('EXPIRED'), new EnvelopeOrderNotOpenException(
+                "Kuvert {$envelope->id} ({$envelope->uuid}): alle har underskrevet, men Idura-ordren {$envelope->idura_signature_order_id} udløb, før kuverten blev fuldført. "
+                . 'Den signerede PDF er ikke gemt her. Kontakt Idura om dokumentet, eller send kuverten igen.'
+            ), ['idura_status' => 'EXPIRED']);
+        }
+
+        // Betinget: en fuldførelse, der bliver færdig i mellemtiden, må ikke
+        // overskrives med Expired.
+        $expired = SigningEnvelope::query()
+            ->whereKey($envelope->getKey())
+            ->whereNull('completed_at')
+            ->whereNull('signed_document')
+            ->whereIn('status', [EnvelopeStatus::Sent->value, EnvelopeStatus::PartiallySigned->value])
+            ->where(fn ($q) => $q
+                ->whereNull('completion_started_at')
+                ->orWhere('completion_started_at', '<', now()->subMinutes(self::COMPLETION_CLAIM_MINUTES)))
+            ->update(['status' => EnvelopeStatus::Expired->value]);
+
+        $envelope->refresh();
+
+        if ($expired === 0) {
+            return false;
+        }
+
+        $envelope->logEvent(SigningEventType::EnvelopeExpired);
+
+        return true;
+    }
+
+    private function hasRecordedSignature(SigningEnvelope $envelope, SigningParty $party): bool
+    {
+        return $envelope->events()
+            ->where('event_type', SigningEventType::PartySigned->value)
+            ->where('signing_party_id', $party->getKey())
+            ->exists();
     }
 
     /**
@@ -173,16 +460,22 @@ class SigningRoomService
      */
     public function handleRejected(SigningParty $party, ?string $reason = null): void
     {
-        if ($party->status === SigningPartyStatus::Rejected) {
+        // Betinget: en sen eller samtidig afvisning må ikke overskrive en
+        // underskrift (eller en allerede registreret afvisning).
+        $rejected = SigningParty::query()
+            ->whereKey($party->getKey())
+            ->whereNotIn('status', [SigningPartyStatus::Signed->value, SigningPartyStatus::Rejected->value])
+            ->update([
+                'status' => SigningPartyStatus::Rejected->value,
+                'rejected_at' => now(),
+                'rejection_reason' => $reason,
+            ]);
+
+        if ($rejected === 0) {
             return;
         }
 
-        $party->update([
-            'status' => SigningPartyStatus::Rejected,
-            'rejected_at' => now(),
-            'rejection_reason' => $reason,
-        ]);
-
+        $party->refresh();
         $envelope = $party->envelope;
 
         $envelope->logEvent(SigningEventType::PartyRejected, $party, [
@@ -198,21 +491,67 @@ class SigningRoomService
      */
     public function notifyRoundParties(SigningEnvelope $envelope, int $round): void
     {
+        // Kun underskrivere, der endnu ikke er notificeret: så kan
+        // SyncIduraSignatureStatus kalde den igen for en runde, hvor en mail
+        // ikke kunne lægges i køen, uden at de andre får den to gange.
+        // DocumentReadyNotification er queued: fejler selve afsendelsen senere
+        // i workeren, er parten allerede markeret notified, og jobbet ligger i
+        // failed_jobs (queue:retry). Det dækker denne gen-notifikation ikke.
+        // "Ikke notificeret til runden" = ingen party.notified-event for parten
+        // og status ikke allerede notified/signed/rejected. Ikke kun
+        // notified_at IS NULL: en manuel påmindelse før denne version kunne
+        // sætte notified_at på en part i en senere runde, og så ville
+        // runde-mailen blive sprunget over.
         $parties = $envelope->parties()
             ->where('signing_round', $round)
             ->where('role', SigningPartyRole::Signer->value)
+            ->whereNotIn('status', [SigningPartyStatus::Notified->value, SigningPartyStatus::Signed->value, SigningPartyStatus::Rejected->value])
+            ->whereDoesntHave('events', fn ($q) => $q->where('event_type', SigningEventType::PartyNotified->value))
             ->get();
 
         foreach ($parties as $index => $party) {
-            // Resend rate limit: 2 requests/sec — stagger queued sends 1s apart
-            $party->notify(
-                (new DocumentReadyNotification($envelope, $party))->delay($index),
-            );
+            // Claim parten atomisk, før mailen sendes: kun hvis notified_at
+            // stadig er, som vi så den. Sync og en webhook kan nå hertil
+            // samtidig; den første sætter notified_at, og den anden får 0
+            // rækker.
+            $previousStatus = $party->status instanceof SigningPartyStatus ? $party->status->value : $party->status;
+            $previousNotifiedAt = $party->getRawOriginal('notified_at');
 
-            $party->update([
-                'status' => SigningPartyStatus::Notified,
-                'notified_at' => now(),
-            ]);
+            $claimed = SigningParty::query()
+                ->whereKey($party->getKey())
+                // Også her (ikke kun i SELECT'en): en underskrift, der lander
+                // imellem, må ikke blive overskrevet med notified.
+                ->whereNotIn('status', [SigningPartyStatus::Signed->value, SigningPartyStatus::Rejected->value])
+                ->when(
+                    $previousNotifiedAt === null,
+                    fn ($q) => $q->whereNull('notified_at'),
+                    fn ($q) => $q->where('notified_at', $previousNotifiedAt),
+                )
+                ->update([
+                    'status' => SigningPartyStatus::Notified->value,
+                    'notified_at' => now(),
+                ]);
+
+            if ($claimed === 0) {
+                continue;
+            }
+
+            // Resend rate limit: 2 requests/sec: stagger queued sends 1s apart.
+            // Kan mailen ikke lægges i køen, må det ikke stoppe de andre;
+            // claimet rulles tilbage, så sync prøver igen.
+            try {
+                $party->notify(
+                    (new DocumentReadyNotification($envelope, $party))->delay($index),
+                );
+            } catch (\Throwable $e) {
+                SigningParty::query()
+                    ->whereKey($party->getKey())
+                    ->where('status', SigningPartyStatus::Notified->value)
+                    ->update(['status' => $previousStatus, 'notified_at' => $previousNotifiedAt]);
+                report($e);
+
+                continue;
+            }
 
             $envelope->logEvent(SigningEventType::PartyNotified, $party);
         }
@@ -248,33 +587,261 @@ class SigningRoomService
 
     /**
      * Advance to the next signing round.
+     *
+     * Public, så SyncIduraSignatureStatus kan rykke en runde, der blev
+     * efterladt urykket (fx hvis noget fejlede efter underskriften). Idempotent:
+     * rykker kun, når den nuværende runde faktisk er færdig, og kun én gang pr.
+     * runde, også ved samtidige kald.
+     *
+     * Runder uden parter der skal underskrive (kun kopimodtagere) springes
+     * over, så næste underskrivere får deres mail.
      */
-    private function advanceRound(SigningEnvelope $envelope): void
+    public function advanceRound(SigningEnvelope $envelope): void
     {
-        $nextRound = $envelope->current_round + 1;
+        $lastRound = (int) $envelope->parties()->max('signing_round');
 
-        $envelope->update([
-            'current_round' => $nextRound,
-        ]);
+        while ($envelope->current_round < $lastRound
+            && $envelope->isCurrentRoundComplete()
+            && ! $envelope->isAllRoundsComplete()) {
+            $currentRound = $envelope->current_round;
+            $nextRound = $currentRound + 1;
 
-        $envelope->logEvent(SigningEventType::RoundAdvanced, metadata: [
-            'round' => $nextRound,
-        ]);
+            // Betinget UPDATE: hvis to processer afslutter runden samtidig,
+            // rykker kun den ene runden frem og sender næste rundes mails.
+            $advanced = SigningEnvelope::query()
+                ->whereKey($envelope->getKey())
+                ->where('current_round', $currentRound)
+                ->update(['current_round' => $nextRound]);
 
-        $this->notifyRoundParties($envelope, $nextRound);
+            if ($advanced === 0) {
+                return;
+            }
+
+            $envelope->refresh();
+
+            $envelope->logEvent(SigningEventType::RoundAdvanced, metadata: [
+                'round' => $nextRound,
+            ]);
+
+            $this->notifyRoundParties($envelope, $nextRound);
+        }
     }
 
     /**
-     * Complete an envelope: close the Idura order and save the signed PDF.
+     * Hvor længe en påbegyndt fuldførelse gælder. Dør processen undervejs, kan
+     * en ny overtage efter dette (Idura-kald har 30 s timeout).
      */
-    private function completeEnvelope(SigningEnvelope $envelope): void
+    private const COMPLETION_CLAIM_MINUTES = 10;
+
+    /**
+     * Complete an envelope: close the Idura order and save the signed PDF.
+     *
+     * Idempotent og genoptagelig (kaldes fra handleSigned og
+     * SyncIduraSignatureStatus):
+     *  1. kort, betinget claim (completion_started_at), kun hvis kuverten ikke
+     *     er fuldført, alle har underskrevet, og ingen anden er i gang;
+     *  2. Idura-kald og disk-skrivning UDEN lås;
+     *  3. én betinget skrivning, der markerer kuverten Completed.
+     * Kun det kald, der gennemfører trin 3, sender mails.
+     *
+     * Fejl i trin 2 rapporteres én gang pr. fejl (reportBlockedOnce), claimet
+     * frigives, og sync prøver igen ved næste kørsel.
+     *
+     * Returnerer true hvis netop dette kald fuldførte kuverten.
+     */
+    public function completeEnvelope(SigningEnvelope $envelope): bool
+    {
+        $envelope->refresh();
+
+        if ($envelope->isCompleted()) {
+            // Allerede fuldført. Har en samtidig webhook overskrevet status,
+            // rettes den tilbage, uden nye mails.
+            SigningEnvelope::query()
+                ->whereKey($envelope->getKey())
+                ->whereNot('status', EnvelopeStatus::Completed->value)
+                ->update(['status' => EnvelopeStatus::Completed->value]);
+
+            $envelope->refresh();
+
+            return false;
+        }
+
+        if (! $envelope->isAllRoundsComplete()) {
+            return false;
+        }
+
+        // Claimets tidsstempel er også dets nøgle: kun den, der satte netop
+        // denne værdi, må frigive det eller afslutte fuldførelsen.
+        $claimedAt = now()->startOfSecond();
+
+        $claimed = SigningEnvelope::query()
+            ->whereKey($envelope->getKey())
+            ->whereNull('completed_at')
+            ->whereNull('signed_document')
+            ->whereNot('status', EnvelopeStatus::Completed->value)
+            ->where(fn ($q) => $q
+                ->whereNull('completion_started_at')
+                ->orWhere('completion_started_at', '<', now()->subMinutes(self::COMPLETION_CLAIM_MINUTES)))
+            ->update(['completion_started_at' => $claimedAt]);
+
+        if ($claimed === 0) {
+            return false;
+        }
+
+        $envelope->refresh();
+
+        try {
+            $signedDocument = $this->closeOrderAndStore($envelope);
+        } catch (\Throwable $e) {
+            $this->releaseCompletionClaim($envelope, $claimedAt);
+
+            // Samme fejl gentages typisk hver time, til nogen griber ind.
+            $envelope->reportBlockedOnce(self::completionFailureReason($e), $e);
+
+            return false;
+        }
+
+        if ($signedDocument === false) {
+            $this->releaseCompletionClaim($envelope, $claimedAt);
+
+            return false;
+        }
+
+        $finished = SigningEnvelope::query()
+            ->whereKey($envelope->getKey())
+            ->whereNull('completed_at')
+            ->where('completion_started_at', $claimedAt)
+            ->update([
+                'status' => EnvelopeStatus::Completed->value,
+                'completed_at' => now(),
+                'signed_document' => $signedDocument,
+                'completion_started_at' => null,
+            ]);
+
+        // Taber vi kapløbet (claimet blev overtaget og den anden fuldførte
+        // først), må vi hverken logge eller maile.
+        if ($finished === 0) {
+            return false;
+        }
+
+        $envelope->refresh();
+
+        $envelope->logEvent(SigningEventType::EnvelopeCompleted);
+        $envelope->resolveBlocks();
+
+        // Every party is told the envelope is final: this mail is their only
+        // notification of it, and viewers are attached precisely so they can
+        // see the document. Who gets a *key* is decided in the notification:
+        // only a party who actually signed receives a token link; everyone
+        // else is pointed at the portal to identify themselves with MitID.
+        // Én fejlende mail må ikke stoppe resten: kuverten er fuldført og
+        // fuldføres ikke igen.
+        foreach ($envelope->parties as $party) {
+            try {
+                $party->notify(new EnvelopeCompletedNotification($envelope));
+            } catch (\Throwable $e) {
+                report($e);
+            }
+        }
+
+        try {
+            $this->notifyCreator($envelope, new EnvelopeCompletedNotification($envelope));
+        } catch (\Throwable $e) {
+            report($e);
+        }
+
+        return true;
+    }
+
+    private function hasFreshCompletionClaim(SigningEnvelope $envelope): bool
+    {
+        return $envelope->completion_started_at !== null
+            && $envelope->completion_started_at->gt(now()->subMinutes(self::COMPLETION_CLAIM_MINUTES));
+    }
+
+    private function releaseCompletionClaim(SigningEnvelope $envelope, \DateTimeInterface $claimedAt): void
+    {
+        // Kun eget claim: er det overtaget i mellemtiden, er det ikke vores.
+        SigningEnvelope::query()
+            ->whereKey($envelope->getKey())
+            ->where('completion_started_at', $claimedAt)
+            ->update(['completion_started_at' => null]);
+    }
+
+    /**
+     * Årsagsnøgle for en fejlet fuldførelse: undtagelsesklassen og, for
+     * Idura-HTTP-fejl, statuskoden. Ikke selve beskeden, som kan indeholde
+     * skiftende request-id'er og så blive rapporteret hver time.
+     */
+    public static function completionFailureReason(\Throwable $e): string
+    {
+        $reason = 'completion_failed:' . $e::class;
+
+        // HTTP-fejl: kun statuskoden. Svarets krop kan indeholde request-id'er
+        // i alle formater og ville ellers give en ny nøgle hver time.
+        if (preg_match('/request failed with status (\d{3})/', $e->getMessage(), $m)) {
+            return $reason . ':http_' . $m[1];
+        }
+
+        if (str_starts_with($e->getMessage(), 'Idura GraphQL errors:')) {
+            $reason .= ':graphql';
+        }
+
+        // Beskeden normaliseret: id'er, tal og uuid'er fjernet, så skiftende
+        // request-id'er giver samme nøgle, men forskellige fejl af samme
+        // klasse (fx disk-fejl vs. utilgængelig PDF) ikke slås sammen.
+        $normalized = preg_replace(
+            ['/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i', '/\b[0-9a-f]{16,}\b/i', '/\d+/'],
+            ['<uuid>', '<hex>', '#'],
+            $e->getMessage(),
+        );
+
+        return $reason . ':' . substr(sha1((string) $normalized), 0, 12);
+    }
+
+    /**
+     * Luk ordren hos Idura og gem den signerede PDF. Skriver ikke kuvertens
+     * status; det gør completeEnvelope bagefter i én betinget skrivning.
+     *
+     * Returnerer stien til den gemte PDF, eller false (uden at kaste) hvis
+     * ordren hos Idura er CANCELLED eller EXPIRED: så kan den ikke fuldføres,
+     * og blokeringen er rapporteret. Mangler PDF'en, kastes
+     * SignedDocumentUnavailableException.
+     */
+    private function closeOrderAndStore(SigningEnvelope $envelope): string|false
     {
         $retainDays = config('signing-room.defaults.retain_documents', 7);
+        $orderId = $envelope->idura_signature_order_id;
 
-        $order = $this->idura->closeOrder(
-            $envelope->idura_signature_order_id,
-            $retainDays,
-        );
+        $current = $this->idura->getOrderStatus($orderId);
+        $iduraStatus = $current['status'] ?? null;
+
+        if (in_array($iduraStatus, ['CANCELLED', 'EXPIRED'], true)) {
+            // Ordren kan ikke lukkes. Prøv ikke closeSignatureOrder hver time;
+            // rapportér én gang, hvad der skal gøres.
+            $envelope->reportBlockedOnce(self::orderNotOpenReason($iduraStatus), new EnvelopeOrderNotOpenException(
+                "Kuvert {$envelope->id} ({$envelope->uuid}): alle har underskrevet, men Idura-ordren {$orderId} er {$iduraStatus} "
+                . 'og kan ikke lukkes. Afgør manuelt, om kuverten skal sendes igen eller annulleres.'
+            ), ['idura_status' => $iduraStatus]);
+
+            return false;
+        }
+
+        if ($iduraStatus === 'CLOSED') {
+            // Et tidligere forsøg lukkede ordren, men fik ikke gemt PDF'en.
+            // closeSignatureOrder igen ville fejle; hent i stedet dokumentet,
+            // som Idura beholder i retain_documents dage efter lukning.
+            $order = $this->idura->getOrderDocuments($orderId);
+
+            if (empty($order['documents'][0]['blob'])) {
+                throw new SignedDocumentUnavailableException(
+                    "KRITISK: Idura-ordren for kuvert {$envelope->uuid} er lukket, men den signerede PDF kan ikke hentes. "
+                    . "Idura sletter dokumentet {$retainDays} dage efter lukning, og vi har ingen kopi. Kræver manuel handling nu."
+                );
+            }
+        } else {
+            $order = $this->idura->closeOrder($orderId, $retainDays);
+        }
 
         // Save the signed PDF from the first document's blob
         if (! empty($order['documents'][0]['blob'])) {
@@ -294,29 +861,45 @@ class SigningRoomService
                 );
             }
 
-            $envelope->update([
-                'signed_document' => $storagePath,
-            ]);
+            return $storagePath;
         }
 
-        $envelope->update([
-            'status' => EnvelopeStatus::Completed,
-            'completed_at' => now(),
-        ]);
+        // Ordren er lukket, men uden dokument: samme kritiske situation som i
+        // CLOSED-grenen. Kuverten må ikke blive Completed uden PDF, for så
+        // forhindrer isCompleted() ethvert senere forsøg på at hente den.
+        throw new SignedDocumentUnavailableException(
+            "KRITISK: Idura lukkede ordren for kuvert {$envelope->uuid}, men sendte ingen signeret PDF. "
+            . "Idura sletter dokumentet {$retainDays} dage efter lukning. Hent det manuelt nu."
+        );
+    }
 
-        $envelope->logEvent(SigningEventType::EnvelopeCompleted);
+    /**
+     * Årsagsnøgle for en Idura-ordre, der ikke kan lukkes. Fælles for
+     * fuldførelsen og sync-jobbet, så samme blokering kun rapporteres én gang.
+     */
+    public static function orderNotOpenReason(string $iduraStatus): string
+    {
+        return 'idura_order_' . strtolower($iduraStatus);
+    }
 
-        // Every party is told the envelope is final — this mail is their only
-        // notification of it, and viewers are attached precisely so they can
-        // see the document. Who gets a *key* is decided in the notification:
-        // only a party who actually signed receives a token link; everyone
-        // else is pointed at the portal to identify themselves with MitID.
-        foreach ($envelope->parties as $party) {
-            $party->notify(new EnvelopeCompletedNotification($envelope));
+    private function isSigner(SigningParty $party): bool
+    {
+        return self::roleValue($party->role) === SigningPartyRole::Signer->value;
+    }
+
+    /**
+     * Rolle som streng: accepterer enum, streng (også store bogstaver) og null
+     * (= underskriver, som kolonnens standard).
+     */
+    private static function roleValue(SigningPartyRole|string|null $role): string
+    {
+        if ($role instanceof SigningPartyRole) {
+            return $role->value;
         }
 
-        // Also notify the creator
-        $this->notifyCreator($envelope, new EnvelopeCompletedNotification($envelope));
+        $role = $role === null ? '' : strtolower(trim($role));
+
+        return $role === '' ? SigningPartyRole::Signer->value : $role;
     }
 
     /**
